@@ -34,8 +34,11 @@ func TestEnsureFreshWaitsForItsOwnRound(t *testing.T) {
 	b.core.SyncTimeout = syncTimeout
 
 	var (
-		rounds         atomic.Int32
-		secondArrived  atomic.Int64
+		rounds atomic.Int32
+		// secondArrived keeps the arrival with its monotonic reading: the wall clock
+		// may step meanwhile (a virtual machine's time synchronization does by
+		// seconds), which would shorten the second round.
+		secondArrived  atomic.Pointer[time.Time]
 		firstRoundHeld = make(chan struct{})
 		releaseFirst   = make(chan struct{})
 	)
@@ -48,7 +51,7 @@ func TestEnsureFreshWaitsForItsOwnRound(t *testing.T) {
 			close(firstRoundHeld)
 			<-releaseFirst
 		case 2:
-			time.Sleep(time.Until(time.Unix(0, secondArrived.Load()).Add(syncTimeout * 12 / 10)))
+			time.Sleep(time.Until(secondArrived.Load().Add(syncTimeout * 12 / 10)))
 		}
 	})
 
@@ -58,7 +61,7 @@ func TestEnsureFreshWaitsForItsOwnRound(t *testing.T) {
 
 	// The second call arrives while the first round is held after it read the head.
 	arrived := time.Now()
-	secondArrived.Store(arrived.UnixNano())
+	secondArrived.Store(&arrived)
 	second := make(chan error, 1)
 	go func() { second <- b.sy.EnsureFresh(b.ctx, b.pbRepo(localRelPath)) }()
 
