@@ -288,6 +288,9 @@ Git hooks use private.
 
 - The Go SDK (`sdk/`) is the only supported client library. Other languages can
   use the generated gRPC stubs, but no bindings are provided.
+- The server runs on Linux and macOS only. The `graft` CLI and the SDK also run
+  on Windows (`go build ./cmd/graft`); CI builds them there, starts the CLI and
+  runs the workspace tests.
 - `graft` is a sparse, server-centric workspace for agents, not a replacement
   for `git`. Commands that need the full object graph locally, such as `git log`
   inside the workspace, need a normal Git clone.

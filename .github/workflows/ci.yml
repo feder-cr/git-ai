@@ -172,3 +172,32 @@ jobs:
 
       - name: Test (graft-agents module, CGO_ENABLED=0)
         run: CGO_ENABLED=0 go -C tools/graft-agents test ./...
+
+  client-windows:
+    # The server does not run on Windows, but its clients do: the graft CLI and the SDK must build
+    # there and start (a package of theirs that does not work on Windows fails at initialization),
+    # and the workspace, which has Windows code of its own, must pass its tests.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        # bash fails a step on its first failing command; PowerShell, the default here, only on
+        # its last.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build (graft CLI, SDK)
+        run: |
+          go build -o graft.exe ./cmd/graft
+          go build ./sdk/...
+
+      - name: Start (graft CLI)
+        run: ./graft.exe help
+
+      - name: Test (workspace)
+        run: go test -count=1 ./internal/graft/workspace/...

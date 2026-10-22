@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/feder-cr/git-ai/internal/graft/changelog"
+	"github.com/feder-cr/git-ai/internal/graft/changelog/member"
 	"github.com/feder-cr/git-ai/internal/graft/workspace"
 	"github.com/feder-cr/git-ai/sdk"
 )
@@ -531,29 +531,29 @@ func memberNote(m workspace.ChangesetMember) string {
 
 // changesetJSON is the --json form of a changeset, one object per line. It is
 // the event format of graft-superfan (superfan.Event). Object IDs are full.
-// Members have the form of the changeset log, see changelog.Member.
+// Members have the form of the changeset log, see member.Member.
 type changesetJSON struct {
-	Sequence   uint64             `json:"sequence"`
-	Reference  string             `json:"reference"`
-	OldOID     string             `json:"old_oid"`
-	NewOID     string             `json:"new_oid"`
-	Operation  string             `json:"operation"`
-	Actor      string             `json:"actor"`
-	RecordedAt time.Time          `json:"recorded_at"`
-	Rewritten  bool               `json:"rewritten"`
-	Members    []changelog.Member `json:"members,omitempty"`
+	Sequence   uint64          `json:"sequence"`
+	Reference  string          `json:"reference"`
+	OldOID     string          `json:"old_oid"`
+	NewOID     string          `json:"new_oid"`
+	Operation  string          `json:"operation"`
+	Actor      string          `json:"actor"`
+	RecordedAt time.Time       `json:"recorded_at"`
+	Rewritten  bool            `json:"rewritten"`
+	Members    []member.Member `json:"members,omitempty"`
 }
 
 // logMembers converts the members of a changeset to the form of the changeset
 // log, which --json writes. It returns nil when there are none.
-func logMembers(members []workspace.ChangesetMember) []changelog.Member {
+func logMembers(members []workspace.ChangesetMember) []member.Member {
 	if len(members) == 0 {
 		return nil
 	}
 
-	out := make([]changelog.Member, len(members))
+	out := make([]member.Member, len(members))
 	for i, m := range members {
-		out[i] = changelog.Member{
+		out[i] = member.Member{
 			OriginalCommit: m.OriginalCommit,
 			Commit:         m.Commit,
 			Actor:          m.Actor,
