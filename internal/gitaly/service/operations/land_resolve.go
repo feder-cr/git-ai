@@ -277,10 +277,8 @@ func (s *Server) landResolveAt(
 			}
 			var verifyErr *landVerifyError
 			current := func(ctx context.Context) (bool, error) {
-				now, err := repo.ResolveRevision(ctx, git.NewReferenceNameFromBranchName(string(in.GetBranch())).Revision())
-				if errors.Is(err, git.ErrReferenceNotFound) {
-					return false, nil
-				}
+				// A missing branch reads as the empty ID, which is never the tip.
+				now, err := s.landBranchTip(ctx, repo, git.NewReferenceNameFromBranchName(string(in.GetBranch())))
 				return now == tip, err
 			}
 			switch err := s.landVerifyOutOfLane(ctx, in.GetRepository(), repo, tree, current); {

@@ -130,16 +130,13 @@ func (s *Server) newLandingAttempt(ctx context.Context, repository *gitalypb.Rep
 		}, nil
 }
 
-// Tip returns the tip of the reference. A missing reference yields an empty ID.
+// Tip returns the tip of the reference, read by its exact name (landBranchTip). A missing reference
+// yields an empty ID.
 func (a *landingAttempt) Tip(ctx context.Context, reference git.ReferenceName) (git.ObjectID, error) {
 	defer a.observe(landBatchPhaseTip, time.Now())
 
-	tip, err := a.repo.ResolveRevision(ctx, reference.Revision())
+	tip, err := a.server.landBranchTip(ctx, a.repo, reference)
 	if err != nil {
-		if errors.Is(err, git.ErrReferenceNotFound) {
-			return "", nil
-		}
-
 		return "", structerr.NewInternal("resolving branch: %w", err)
 	}
 

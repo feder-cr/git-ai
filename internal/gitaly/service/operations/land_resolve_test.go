@@ -270,6 +270,7 @@ func (fx resolveFixture) server(t *testing.T, rcfg config.GraftResolver) *Server
 	}
 	return &Server{
 		logger: testhelper.NewLogger(t), gitConfig: fx.cfg.Git, resolveCfg: rcfg, conflictResolver: client, verifyPool: pool,
+		catfileCache:     cache,
 		localRepoFactory: localrepo.NewFactory(testhelper.NewLogger(t), config.NewLocator(fx.cfg), gittest.NewCommandFactory(t, fx.cfg), cache),
 	}
 }

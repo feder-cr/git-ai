@@ -203,14 +203,14 @@ func (s *Server) landPrecheckResolution(ctx context.Context, in *gitalypb.UserLa
 
 	// A resolution for a tip the branch has left, or for a change that already landed, needs no
 	// check: the lane refuses or answers it at once, as it reads the tip again under the lane.
-	// The branch is read as the lane reads it (landingAttempt.Tip): a symbolic reference resolves
-	// to its target's commit.
-	branchTip, err := repo.ResolveRevision(ctx, git.NewReferenceNameFromBranchName(string(in.GetBranch())).Revision())
+	// The branch is read as the lane reads it (landingAttempt.Tip): by its exact name, and a
+	// symbolic reference resolves to its target's commit.
+	branchTip, err := s.landBranchTip(ctx, repo, git.NewReferenceNameFromBranchName(string(in.GetBranch())))
 	switch {
-	case errors.Is(err, git.ErrReferenceNotFound):
-		return &landPrecheck{skipped: fmt.Sprintf("branch %q does not exist", string(in.GetBranch()))}, nil
 	case err != nil:
 		return &landPrecheck{tip: tip, commit: commitID, result: landCheckResult{failure: fmt.Sprintf("reading the branch: %v", err), failureErr: err}}, nil
+	case branchTip == "":
+		return &landPrecheck{skipped: fmt.Sprintf("branch %q does not exist", string(in.GetBranch()))}, nil
 	case branchTip != tip:
 		return &landPrecheck{skipped: fmt.Sprintf("the branch was at %s, not at the tip of the resolution", branchTip)}, nil
 	}
@@ -304,10 +304,8 @@ func (s *Server) landPrecheckVerify(caller, budgetCtx context.Context, budget ti
 		return structerr.NewInternal("building the tree to verify: %w", err)
 	}
 	current := func(ctx context.Context) (bool, error) {
-		now, err := repo.ResolveRevision(ctx, git.NewReferenceNameFromBranchName(string(in.GetBranch())).Revision())
-		if errors.Is(err, git.ErrReferenceNotFound) {
-			return false, nil
-		}
+		// A missing branch reads as the empty ID, which is never the tip.
+		now, err := s.landBranchTip(ctx, repo, git.NewReferenceNameFromBranchName(string(in.GetBranch())))
 		return now == pc.tip, err
 	}
 	var verifyErr *landVerifyError

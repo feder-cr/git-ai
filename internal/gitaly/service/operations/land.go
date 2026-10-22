@@ -364,7 +364,7 @@ func (s *Server) updateLandedReference(
 	// attempt sees the current state of the branch.
 	var updateErr updateref.Error
 	if errors.As(err, &updateErr) {
-		moved, resolveErr := landReferenceMoved(ctx, quarantineRepo, reference, oldOID)
+		moved, resolveErr := s.landReferenceMoved(ctx, quarantineRepo, reference, oldOID)
 		if resolveErr != nil {
 			return structerr.NewInternal("updating ref with hooks: %w", errors.Join(err, resolveErr))
 		}
@@ -383,22 +383,43 @@ func (s *Server) updateLandedReference(
 
 // landReferenceMoved reports whether the reference no longer points to expectedOID. A missing
 // reference has moved unless the zero OID was expected.
-func landReferenceMoved(ctx context.Context, repo *localrepo.Repo, reference git.ReferenceName, expectedOID git.ObjectID) (bool, error) {
+func (s *Server) landReferenceMoved(ctx context.Context, repo *localrepo.Repo, reference git.ReferenceName, expectedOID git.ObjectID) (bool, error) {
 	objectHash, err := repo.ObjectHash(ctx)
 	if err != nil {
 		return false, fmt.Errorf("detecting object hash: %w", err)
 	}
 
-	current, err := repo.ResolveRevision(ctx, reference.Revision())
+	current, err := s.landBranchTip(ctx, repo, reference)
 	if err != nil {
-		if errors.Is(err, git.ErrReferenceNotFound) {
-			return expectedOID != objectHash.ZeroOID, nil
-		}
-
 		return false, fmt.Errorf("resolving branch after failed update: %w", err)
+	}
+	if current == "" {
+		return expectedOID != objectHash.ZeroOID, nil
 	}
 
 	return current != expectedOID, nil
+}
+
+// landBranchTip returns the commit of the branch reference, read by its exact name, or an empty ID
+// when the branch does not exist. git resolves refs/heads/<x> with its DWIM rules: when the branch
+// is missing, refs/refs/heads/<x>, refs/tags/refs/heads/<x>, refs/heads/refs/heads/<x> or
+// refs/remotes/refs/heads/<x> answers for it, and a land would decide, and answer already_landed,
+// against the commit such a reference (a tag an agent may create) chose. UserCommitFiles reads its
+// branches the same way (localrepo.ResolveBranchesExactly). A symbolic branch resolves to the commit
+// of its target.
+func (s *Server) landBranchTip(ctx context.Context, repo *localrepo.Repo, reference git.ReferenceName) (git.ObjectID, error) {
+	reader, release, err := s.catfileCache.ObjectInfoReader(ctx, repo)
+	if err != nil {
+		return "", fmt.Errorf("creating object info reader: %w", err)
+	}
+	defer release()
+
+	branches, err := repo.ResolveBranchesExactly(ctx, reader, reference)
+	if err != nil {
+		return "", err
+	}
+
+	return branches[reference], nil
 }
 
 // landMergeConflictError returns the FailedPrecondition error for a change that does not apply

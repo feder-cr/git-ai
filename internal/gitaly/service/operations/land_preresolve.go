@@ -181,12 +181,12 @@ func (s *Server) landPreResolve(ctx context.Context, in *gitalypb.UserLandReques
 	}
 	defer cleanup()
 
-	tip, err := repo.ResolveRevision(ctx, git.NewReferenceNameFromBranchName(string(in.GetBranch())).Revision())
+	tip, err := s.landBranchTip(ctx, repo, git.NewReferenceNameFromBranchName(string(in.GetBranch())))
 	if err != nil {
-		if errors.Is(err, git.ErrReferenceNotFound) {
-			return nil
-		}
 		return fmt.Errorf("reading the branch: %w", err)
+	}
+	if tip == "" {
+		return nil
 	}
 	commitID, err := repo.ResolveRevision(ctx, git.Revision(in.GetCommitId()+"^{commit}"))
 	if err != nil {

@@ -69,7 +69,8 @@ func (s *Server) landBatchable(ctx context.Context, in *gitalypb.UserLandRequest
 	}
 
 	reference := git.NewReferenceNameFromBranchName(string(in.GetBranch()))
-	if _, err := s.localRepoFactory.Build(in.GetRepository()).ResolveRevision(ctx, reference.Revision()); err != nil {
+	tip, err := s.landBranchTip(ctx, s.localRepoFactory.Build(in.GetRepository()), reference)
+	if err != nil || tip == "" {
 		return false
 	}
 
