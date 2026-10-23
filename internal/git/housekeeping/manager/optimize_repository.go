@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
 	"github.com/feder-cr/git-ai/internal/git/housekeeping"
@@ -353,10 +354,16 @@ func (m *RepositoryManager) optimizeRepository(
 
 	finishTimer = m.metrics.ReportTaskLatency("pack-refs", "apply")
 	didPackRefs, err := m.packRefsIfNeeded(ctx, repo, strategy)
-	if err != nil {
+	switch {
+	case errors.Is(err, errReftableCompactionContended):
+		// Benign: the stack stays consistent and the next housekeeping compacts or cleans what
+		// this one could not, as git's own auto-compaction assumes. The rest still runs.
+		optimizations["packed_refs"] = "skipped"
+		m.logger.WithError(err).WarnContext(ctx, "skipped packing references: reftable stack locked or modified concurrently")
+	case err != nil:
 		optimizations["packed_refs"] = "failure"
 		return fmt.Errorf("could not pack refs: %w", err)
-	} else if didPackRefs {
+	case didPackRefs:
 		optimizations["packed_refs"] = "success"
 	}
 	packRefsTime = finishTimer()
@@ -549,10 +556,61 @@ func (m *RepositoryManager) packRefsIfNeeded(ctx context.Context, repo *localrep
 			gitcmd.Flag{Name: "--all"},
 		},
 	}, gitcmd.WithStderr(&stderr)); err != nil {
-		return false, fmt.Errorf("packing refs: %w, stderr: %q", err, stderr.String())
+		err = fmt.Errorf("packing refs: %w, stderr: %q", err, stderr.String())
+		if backend.Name == git.ReferenceBackendReftables.Name && isReftableContention(err, stderr.String()) {
+			return false, fmt.Errorf("%w: %w", errReftableCompactionContended, err)
+		}
+		return false, err
 	}
 
 	return true, nil
+}
+
+// errReftableCompactionContended is returned by packRefsIfNeeded when git-pack-refs(1) failed on a
+// reftable repository only because a concurrent writer held the stack's lock or changed the stack.
+var errReftableCompactionContended = errors.New("reftable compaction contended")
+
+// Exit codes and stderr of git-pack-refs(1) on a reftable repository when the stack is contended.
+// They are git internals, read from git 2.56.0-rc1 (3bbf434) and 2.55.0-rc1 (1ea786d), the bundled
+// builds, and pinned by TestPackRefsIfNeeded_reftableContention against the real git:
+//
+//   - reftable_be_optimize (refs/reftable-backend.c:1699) returns what reftable_stack_clean
+//     (reftable/stack.c:1845) returns as is, and git exits with it modulo 256 and an empty stderr:
+//     REFTABLE_LOCK_ERROR (-5) when tables.list.lock is held, REFTABLE_OUTDATED_ERROR (-12) when
+//     the stack changed under it (reftable/reftable-error.h).
+//   - When the compaction itself fails, reftable_be_optimize reports it with error(), exiting 255,
+//     and "unable to compact stack: <reftable_error_str>", whose texts for these two errors come
+//     from reftable/error.c.
+//
+// git's own auto-compaction treats both errors as benign (reftable/stack.c:833). A lock left by a
+// crashed git is no reason to retry here either: CleanStaleData removes tables.list.lock once it is
+// older than housekeeping.ReftableLockfileGracePeriod, before the next pack-refs runs.
+const (
+	reftableLockErrorExitCode     = 256 - 5
+	reftableOutdatedErrorExitCode = 256 - 12
+	gitErrorExitCode              = 255
+
+	reftableCompactLockedStderr   = "error: unable to compact stack: data is locked\n"
+	reftableCompactOutdatedStderr = "error: unable to compact stack: data concurrently modified\n"
+)
+
+// isReftableContention reports whether git-pack-refs(1) failed with err and stderr on a reftable
+// repository only because the stack was locked or modified concurrently. Any other failure is a
+// real error.
+func isReftableContention(err error, stderr string) bool {
+	exitCode, ok := command.ExitStatus(err)
+	if !ok {
+		return false
+	}
+
+	switch exitCode {
+	case reftableLockErrorExitCode, reftableOutdatedErrorExitCode:
+		return stderr == ""
+	case gitErrorExitCode:
+		return stderr == reftableCompactLockedStderr || stderr == reftableCompactOutdatedStderr
+	default:
+		return false
+	}
 }
 
 // CleanStaleData removes any stale data in the repository as per the provided configuration.
