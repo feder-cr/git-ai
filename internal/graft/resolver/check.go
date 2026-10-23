@@ -245,6 +245,19 @@ func (p *VerifyPool) Acquire(ctx context.Context, repo string) (*VerifySlot, err
 	}
 }
 
+// Users is the number of verifications that hold or wait for a slot of repo.
+func (p *VerifyPool) Users(repo string) int {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r := p.repos[repo]; r != nil {
+		return r.users
+	}
+	return 0
+}
+
 // Release gives the slot back; a second call does nothing.
 func (s *VerifySlot) Release() {
 	if s == nil || s.released {

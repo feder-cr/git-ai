@@ -262,7 +262,11 @@ func (s *Server) landResolving(ctx context.Context, in *gitalypb.UserLandRequest
 		}
 		timeout += verifyTimeout
 	}
-	resolveCtx, cancel := context.WithTimeout(ctx, timeout)
+	newDeadlineContext := context.WithTimeout
+	if s.landDeadlineContext != nil {
+		newDeadlineContext = s.landDeadlineContext
+	}
+	resolveCtx, cancel := newDeadlineContext(ctx, timeout)
 	defer cancel()
 
 	pre := newLandPreResolution()
