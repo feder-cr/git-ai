@@ -5,6 +5,18 @@ Portions of this software are licensed as follows:
 
 * All content that resides under the "ee/" directory of this repository, if that
   directory exists, is licensed under the license defined in "ee/LICENSE".
+* The bundled Git is not part of this repository and is not licensed under the
+  MIT license below. The build downloads the sources of Git, at the revisions
+  pinned by GIT_VERSION, GIT_VERSION_MASTER, GIT_VERSION_PREV and
+  GIT_VERSION_MVCC in the Makefile, from git.git (https://gitlab.com/gitlab-org/git.git),
+  and compiles them into separate executables that the server invokes as
+  external programs. Those sources, and the executables built from them, are
+  licensed GPL-2.0-only, as Git itself is; their license terms and copyright
+  notices are theirs, see the COPYING file of the Git sources. This repository
+  shares no code with them, and the pinned revisions reproduce the exact sources
+  of any distributed executable.
+* Other tools that the build downloads and bundles, such as git-filter-repo,
+  keep the license of their own sources.
 * All other content is licensed under the MIT license defined below.
 
 --------------------------------------------------------------------------------
