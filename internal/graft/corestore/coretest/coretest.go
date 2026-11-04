@@ -17,6 +17,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,3 +246,61 @@ func StorageNames(cfg config.Cfg) []string {
 // TestBootID is the boot identity EnableLocalRefs gives the deferred
 // durability by default.
 const TestBootID = "test-boot"
+
+// CommitRefWithoutNameCheck records a changeset that creates the reference, with
+// direct writes that skip CommitChangeset's refusal of names that conflict: the
+// state a repository can be in from a version that had no such refusal, for the
+// tests of its repair.
+func CommitRefWithoutNameCheck(tb testing.TB, ctx context.Context, meta corestore.MetaStore, repoID int64, name string, target corestore.Target) {
+	tb.Helper()
+
+	s, ok := meta.(*sqlstore.Store)
+	require.True(tb, ok, "the metadata store is a %T", meta)
+
+	bind := func(query string) string {
+		if s.Dialect() != sqlstore.Postgres {
+			return query
+		}
+		for i := 1; strings.Contains(query, "?"); i++ {
+			query = strings.Replace(query, "?", "$"+strconv.Itoa(i), 1)
+		}
+		return query
+	}
+	var createdAt any = time.Now().UTC()
+	if s.Dialect() == sqlstore.SQLite {
+		createdAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	tx, err := s.DB().BeginTx(ctx, nil)
+	require.NoError(tb, err)
+	defer func() { _ = tx.Rollback() }()
+
+	var seq int64
+	require.NoError(tb, tx.QueryRowContext(ctx, bind("SELECT head_seq + 1 FROM graft_repositories WHERE repo_id = ?"), repoID).Scan(&seq))
+
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{
+			"INSERT INTO graft_changesets (repo_id, seq, operation, actor, node_id, pack_key, pack_bytes, forced, created_at) VALUES (?, ?, 'test', 'tester', 'an-older-node', NULL, 0, ?, ?)",
+			[]any{repoID, seq, false, createdAt},
+		},
+		{
+			"INSERT INTO graft_changeset_refs (repo_id, seq, ordinal, name, old_target, new_target) VALUES (?, ?, 0, ?, NULL, ?)",
+			[]any{repoID, seq, []byte(name), string(target)},
+		},
+		{
+			"INSERT INTO graft_refs (repo_id, name, target, seq) VALUES (?, ?, ?, ?)",
+			[]any{repoID, []byte(name), string(target), seq},
+		},
+		{
+			"UPDATE graft_repositories SET head_seq = ? WHERE repo_id = ?",
+			[]any{seq, repoID},
+		},
+	} {
+		_, err := tx.ExecContext(ctx, bind(statement.query), statement.args...)
+		require.NoError(tb, err)
+	}
+	require.NoError(tb, tx.Commit())
+}

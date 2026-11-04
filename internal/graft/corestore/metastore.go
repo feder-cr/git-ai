@@ -142,7 +142,11 @@ type MetaStore interface {
 	// is set, a changeset that deletes or moves the keep-around reference of a
 	// commit that an open review uses as its head or base is refused with
 	// ErrReviewRootInUse (doc/graft/PLAN7.md, REVIEW ROOTS RULE); shadow mode,
-	// whose changesets are forced, does not enforce it.
+	// whose changesets are forced, does not enforce it. A changeset that creates
+	// a reference that cannot exist in git next to another one of the repository
+	// (refs/heads/a and refs/heads/a/b), counting the changeset's own deletions
+	// and creations, is refused with *ErrRefNameConflict, writing nothing, also
+	// when Force is set: the database must stay something git can apply.
 	CommitChangeset(ctx context.Context, in ChangesetInput) (CommitResult, error)
 	// ListChangesets returns the changesets with after < seq <= upTo in
 	// ascending order, with their updates.

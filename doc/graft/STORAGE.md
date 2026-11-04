@@ -591,6 +591,32 @@ or re-import the repository from scratch (see
   of that push do not land either, unlike a plain git server. Push them again.
   In shadow mode the write proceeds unrecorded, and counts in
   `graft_storage_shadow_errors_total`.
+- **Two nodes create conflicting names.** git cannot hold `refs/heads/a` and
+  `refs/heads/a/b` together, and each node's git only sees its own copy. The
+  database refuses a changeset that creates a name in such a conflict with a
+  reference it holds, as git refuses one locally, so the repository stays
+  something every node can apply. What the client sees:
+  - Where the server drives the reference transaction, the code of git's own
+    refusal: `FailedPrecondition` from `UserCreateBranch` and `UserCommitFiles`,
+    for example.
+  - Where a git process runs the hook, a hook failure, as for any other refusal
+    of the database: `Internal` from `UpdateReferences`.
+  - **A push fails as a whole, also without `--atomic`.** receive-pack exits
+    with `fatal: in 'prepared' phase, update aborted by the reference-transaction
+    hook` and the client sees the remote hang up, with no status line per
+    reference. None of the references of that push land, also those that
+    conflict with nothing; a plain git server would refuse only the conflicting
+    one, with `! [remote rejected] (refname conflict)`. Push the others again.
+    This also happens when the conflict is with the pushing node's own copy:
+    git refuses the update there, but still hands it to the reference-transaction
+    hook with the others (see the push of a branch another client just created,
+    below), and the database refuses the changeset that holds it.
+  A shadow write is not recorded and proceeds: it counts in
+  `graft_storage_shadow_errors_total`, and verification reports the difference.
+  Cost: an update or deletion of an existing reference costs nothing more; each
+  created reference costs one primary key range probe of at most one row, and
+  the parent names of the created references one primary key lookup per 500
+  names.
 - **A repository removed on another node.** The local copy has a watermark
   whose key the database no longer has; it is moved into the storage's
   temporary directory, and the repository is reported missing on that node too.

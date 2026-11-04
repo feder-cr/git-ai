@@ -364,6 +364,19 @@ func (u *UpdaterWithHooks) UpdateReference(
 	if err := u.hookManager.ReferenceTransactionHook(ctx, hook.ReferenceTransactionPrepared, []string{hooksPayload}, strings.NewReader(changes)); err != nil {
 		abortTransaction()
 
+		// The storage core refused the name: the same refusal as git's file/directory
+		// conflict, which git could not report because the other reference is not in
+		// this node's local copy yet. Callers treat both the same way.
+		var fileDirectoryErr updateref.FileDirectoryConflictError
+		if errors.As(err, &fileDirectoryErr) {
+			return Error{
+				Reference: reference,
+				OldOID:    oldrev,
+				NewOID:    newrev,
+				Cause:     err,
+			}
+		}
+
 		return fmt.Errorf("executing preparatory reference-transaction hook: %w", err)
 	}
 

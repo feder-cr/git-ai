@@ -27,6 +27,39 @@ type staleCreateClient struct {
 	env  []string
 }
 
+// newPushClient clones the repository rel of node into a new client named name,
+// which pushes to node over gitaly-ssh as the agent who with token.
+func newPushClient(t *testing.T, node storageNode, rel, name, who, token string) staleCreateClient {
+	t.Helper()
+
+	payload, err := protojson.Marshal(&gitalypb.SSHReceivePackRequest{
+		Repository: &gitalypb.Repository{
+			StorageName:  node.cfg.Storages[0].Name,
+			RelativePath: rel,
+			GlRepository: "graft:" + node.cfg.Storages[0].Name + "/" + rel,
+		},
+		GlId:         who,
+		GlUsername:   who,
+		GlRepository: "graft:" + node.cfg.Storages[0].Name + "/" + rel,
+	})
+	require.NoError(t, err)
+
+	var flags []string
+	for flag, value := range featureflag.FromContext(node.ctx) {
+		flags = append(flags, flag.FormatWithValue(value))
+	}
+
+	path := filepath.Join(t.TempDir(), name)
+	gittest.Exec(t, node.cfg, "clone", "--quiet", node.repoPath(rel), path)
+	return staleCreateClient{t: t, node: node, path: path, env: []string{
+		"GITALY_PAYLOAD=" + string(payload),
+		"GITALY_ADDRESS=" + node.cfg.SocketPath,
+		"GITALY_TOKEN=" + token,
+		"GITALY_FEATUREFLAGS=" + strings.Join(flags, ","),
+		fmt.Sprintf("GIT_SSH_COMMAND=%s receive-pack", node.cfg.BinaryPath("gitaly-ssh")),
+	}}
+}
+
 // push runs git push with the refspecs and returns its output and whether it
 // succeeded.
 func (c staleCreateClient) push(refspecs ...string) (string, bool) {
@@ -83,32 +116,7 @@ func TestStorageStaleCreateDoesNotOverwriteTheBranch(t *testing.T) {
 				rel := a.createRepository(t).GetRelativePath()
 
 				client := func(name string) staleCreateClient {
-					payload, err := protojson.Marshal(&gitalypb.SSHReceivePackRequest{
-						Repository: &gitalypb.Repository{
-							StorageName:  a.cfg.Storages[0].Name,
-							RelativePath: rel,
-							GlRepository: "graft:" + a.cfg.Storages[0].Name + "/" + rel,
-						},
-						GlId:         who,
-						GlUsername:   who,
-						GlRepository: "graft:" + a.cfg.Storages[0].Name + "/" + rel,
-					})
-					require.NoError(t, err)
-
-					var flags []string
-					for flag, value := range featureflag.FromContext(a.ctx) {
-						flags = append(flags, flag.FormatWithValue(value))
-					}
-
-					path := filepath.Join(t.TempDir(), name)
-					gittest.Exec(t, a.cfg, "clone", "--quiet", a.repoPath(rel), path)
-					return staleCreateClient{t: t, node: a, path: path, env: []string{
-						"GITALY_PAYLOAD=" + string(payload),
-						"GITALY_ADDRESS=" + a.cfg.SocketPath,
-						"GITALY_TOKEN=" + tokens[who],
-						"GITALY_FEATUREFLAGS=" + strings.Join(flags, ","),
-						fmt.Sprintf("GIT_SSH_COMMAND=%s receive-pack", a.cfg.BinaryPath("gitaly-ssh")),
-					}}
+					return newPushClient(t, a, rel, name, who, tokens[who])
 				}
 
 				winner := client("winner")

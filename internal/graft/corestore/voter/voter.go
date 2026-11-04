@@ -280,7 +280,9 @@ func (v *Voter) preparePack(ctx context.Context, payload gitcmd.HooksPayload, ch
 //
 // Authoritative mode: a returned error aborts the git transaction; a
 // reference conflict is returned as a wrapped
-// updateref.MismatchingStateError, any storage failure as Unavailable.
+// updateref.MismatchingStateError, a file/directory conflict with a reference of
+// the database as a wrapped updateref.FileDirectoryConflictError, any storage
+// failure as Unavailable.
 // Shadow mode: it always returns nil.
 func (v *Voter) Prepared(ctx context.Context, payload gitcmd.HooksPayload, changes []byte, meta changelog.Meta) error {
 	if v == nil || !v.core.Enabled() {
@@ -508,6 +510,17 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	if errors.As(err, &conflict) {
 		result = resultConflict
 		return fmt.Errorf("storage core: %w", mismatchError(conflict, hash))
+	}
+	// git checked the name against the local references only, which can be behind
+	// the database: this is the file/directory conflict git would have reported
+	// had it seen the other node's reference.
+	var nameConflict *corestore.ErrRefNameConflict
+	if errors.As(err, &nameConflict) {
+		result = resultConflict
+		return fmt.Errorf("storage core: %w", updateref.FileDirectoryConflictError{
+			ConflictingReferenceName: nameConflict.Name,
+			ExistingReferenceName:    nameConflict.Existing,
+		})
 	}
 	if errors.Is(err, corestore.ErrRepositoryNotFound) {
 		if shadow {
