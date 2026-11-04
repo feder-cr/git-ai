@@ -6,8 +6,7 @@ import re
 import sys
 
 # The tests of helpers that the fix introduced; the decoy tests of the RPCs stay.
-FIX_INTERNALS = ("TestStartBranchResolvesTheBranchFirst", "TestStartBranchLocalAndRemoteAgree",
-                 "TestResolveStartBranch", "TestSplitRevisionSuffix")
+FIX_INTERNALS = ("TestResolveStartBranch", "TestSplitRevisionSuffix")
 
 source = open(sys.argv[1], encoding="utf-8").read()
 for name in FIX_INTERNALS:

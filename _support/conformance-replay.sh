@@ -41,7 +41,9 @@ caught=0
 for name in "${cases[@]}"; do
   copy="$workdir/$name"
   mkdir -p "$copy"
-  git -C "$root" archive "${commits[$name]}" | tar -x -C "$copy"
+  if ! git -C "$root" archive "${commits[$name]}" | tar -x -C "$copy"; then
+    echo "$name: cannot unpack ${commits[$name]}"; exit 2
+  fi
 
   # The harness, and the decoy tests of the fix. Tests that reach into what the fix added stay out.
   mkdir -p "$copy/internal/graft/conformance"
@@ -66,7 +68,11 @@ for name in "${cases[@]}"; do
     TEST_FORMAT=standard-verbose TEST_JUNIT_REPORT="$workdir/$name.junit.xml" TEST_JSON_REPORT="$workdir/$name.json" \
     >> "$log" 2>&1
   code=$?
-  if [ $code -ne 0 ]; then
+  if grep -q '\[build failed\]' "$log"; then
+    # A package that does not compile proves nothing about the bug.
+    echo "$name: BUILD FAILED, see $log"; grep -A6 '^=== Errors' "$log" | head -12; continue
+  fi
+  if [ $code -ne 0 ] && grep -qE '^\s*--- FAIL' "$log"; then
     caught=$((caught + 1))
     echo "$name: CAUGHT (exit $code); failed tests:"
     grep -E '^\s*--- FAIL' "$log" | sed 's/^ *//' | sort -u | head -40

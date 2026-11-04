@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -314,6 +315,9 @@ func newGitaiBackend(t *testing.T, mode gitaiMode, graft config.Graft) *gitaiBac
 	cfg.Auth.Token = sharedToken
 	cfg.Graft = graft
 	cfg.Graft.Standalone = mode.standalone
+	// What gitaly serve reads from its configuration. The hooks payload asks for the Preparing phase
+	// of a transaction, and with it the admission of authoritative mode, only when this says so.
+	cfg.Graft.Storage.Mode = string(mode.coreMode)
 	testcfg.BuildGitalySSH(t, cfg)
 	testcfg.BuildGitalyHooks(t, cfg)
 
@@ -322,7 +326,13 @@ func newGitaiBackend(t *testing.T, mode gitaiMode, graft config.Graft) *gitaiBac
 	}
 	var core *corestore.Core
 	if mode.coreMode != "" {
-		core = coretest.Open(t, coretest.Options{Mode: mode.coreMode, Dialect: mode.dialect})
+		core = coretest.Open(t, coretest.Options{
+			Mode: mode.coreMode, Dialect: mode.dialect,
+			// Shadow mode gives up on a write that overruns its budget and counts a divergence, by
+			// design (TestStorageShadowModeBudgetOverrun). The default of 5 s is short for a loaded
+			// machine, and an overrun here would say nothing about the row.
+			ShadowTimeout: 5 * time.Minute,
+		})
 		if mode.coreMode == corestore.ModeAuthoritative {
 			// As gitaly serve does: the admission and the deferred durability of the local writes.
 			coretest.EnableLocalRefs(t, core, cfg)
