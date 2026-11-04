@@ -204,10 +204,7 @@ func (s *Server) landWriteProposals(ctx context.Context, in *gitalypb.UserLandRe
 	for _, f := range l.files {
 		f.proposal = byPath[f.conflict.path]
 	}
-	if err := s.landPruneProposals(ctx, repo, string(in.GetBranch()), ""); err != nil {
-		landProposalPruneErrors.Inc()
-		s.logger.WithError(err).WithField("branch", string(in.GetBranch())).ErrorContext(ctx, "graft: pruning the proposals of the branch failed")
-	}
+	s.landPruneProposals(ctx, repo, string(in.GetBranch()))
 	return ref, nil
 }
 
@@ -221,24 +218,29 @@ func (s *Server) landPruneAfterLand(ctx context.Context, in *gitalypb.UserLandRe
 		return
 	}
 	repo := s.localRepoFactory.Build(in.GetRepository())
-	drop := git.ReferenceName("")
+	branch := string(in.GetBranch())
+	// The proposal of the change that landed is this land's own, a deletion no other land shares;
+	// what the branch has too many of is swept, by one land at a time.
 	if commitID, err := repo.ResolveRevision(ctx, git.Revision(in.GetCommitId()+"^{commit}")); err == nil {
-		drop = proposals.Ref(string(in.GetBranch()), commitID)
+		if err := proposals.Drop(ctx, repo, proposals.Ref(branch, commitID)); err != nil {
+			landProposalPruneErrors.Inc()
+			s.logger.WithError(err).WithField("branch", branch).ErrorContext(ctx, "graft: dropping the proposal of the change that landed failed")
+		}
 	}
-	if err := s.landPruneProposals(ctx, repo, string(in.GetBranch()), drop); err != nil {
-		landProposalPruneErrors.Inc()
-		s.logger.WithError(err).WithField("branch", string(in.GetBranch())).ErrorContext(ctx, "graft: pruning the proposals of the branch failed after the land")
-	}
+	s.landPruneProposals(ctx, repo, branch)
 }
 
-// landPruneProposals prunes the proposals of a branch (proposals.Prune), with drop when set.
-func (s *Server) landPruneProposals(ctx context.Context, repo *localrepo.Repo, branch string, drop git.ReferenceName) error {
+// landPruneProposals sweeps the proposals of a branch (proposals.Sweeper). A failure is logged and
+// counted, and fails nothing: the proposals are an aid, and the next sweep decides anew.
+func (s *Server) landPruneProposals(ctx context.Context, repo *localrepo.Repo, branch string) {
 	ttl, err := s.resolveCfg.ProposalTTLOrDefault()
-	if err != nil {
-		return err
+	if err == nil {
+		err = s.proposalSweeper.Sweep(ctx, repo, branch, ttl, time.Now())
 	}
-	_, err = proposals.Prune(ctx, repo, proposals.BranchDir(branch), ttl, drop, time.Now())
-	return err
+	if err != nil {
+		landProposalPruneErrors.Inc()
+		s.logger.WithError(err).WithField("branch", branch).ErrorContext(ctx, "graft: pruning the proposals of the branch failed")
+	}
 }
 
 // landTrailerValueOrQuoted returns v when it is a valid trailer value (landTrailerValueValid), and
