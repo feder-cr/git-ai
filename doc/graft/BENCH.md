@@ -10,15 +10,25 @@ These are the results of the current code, newest first. Older results, which th
 changes since replaced, are under [History](#history-superseded) at the end.
 
 The headline of the [README](../../README.md#benchmark), 50 agents landing 5
-changes each on one branch with 20% planned conflicts, measured with
-`acceptance-phase4.sh` (two runs):
+changes each on one branch with 20% planned conflicts (seed 1), measured with
+`acceptance-phase4.sh` on one machine. Measurement of record: two runs on
+2026-10-20 on commit `bf95897` (the 0.3.0 tree), every start at load below 2.
+It has not been repeated for 0.4.0.
 
 | 50 agents, 250 changes | classic (batching off) | gitai (batching on) |
 |---|---|---|
-| changes landed | 100-101 | 200 |
-| attempts per landed change | 27 | 1.0 |
-| lands per minute | 240-272 | 1,862-2,544 |
-| p99 latency | 6.3-7.0 s | 1.5-1.8 s |
+| changes landed | 100-106 | 200 |
+| attempts per landed change | 26.5-28.7 | 1.0 |
+| lands per minute | 264-385 | 1,487-1,944 |
+| p99 latency | 4.4-5.2 s | 1.9-2.7 s |
+
+An earlier measurement of the same script, two runs on 2026-10-19 on the 0.2.0
+tree, was the README headline until the 0.3.0 release and is superseded by the
+table above. It gave classic 100-101 landed at 27 attempts each, 240-272 lands
+per minute and p99 6.3-7.0 s, and gitai 200 landed at 1.0 attempts, 1,862-2,544
+lands per minute and p99 1.5-1.8 s. The two sets differ in both columns, so
+part of the difference is the machine and its load, not only the code; the
+cause was not investigated, and only the later set is current.
 
 ### `UserCommitFiles` in fewer git processes (WP96)
 
