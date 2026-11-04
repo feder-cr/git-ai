@@ -444,6 +444,20 @@ test-mod-validator: ${GOTESTSUM}
 test-go: prepare-tests ${GOCOVER_COBERTURA}
 	${Q}$(call run_go_tests)
 
+.PHONY: test-conformance
+## Run the conformance harness: stock git clients against git http-backend and gitai in each mode,
+## and the RPC tables, with the decoy tests of the operations service that it reuses.
+test-conformance: TEST_PACKAGES := ./internal/graft/conformance ./internal/gitaly/service/operations
+test-conformance: TEST_OPTIONS := -count=1 -run '^(TestConformance.*|Test.*ResolvesBranchesExactly|Test.*ResolvesStartRepositoryBranchesExactly|TestStartBranchResolvesTheBranchFirst|TestStartBranchLocalAndRemoteAgree)$$'
+test-conformance: prepare-tests
+	${Q}$(call run_go_tests)
+
+.PHONY: test-conformance-replay
+## Run the conformance harness against the pre-fix commits of past bugs, in copies under
+## CONFORMANCE_REPLAY_DIR, to prove that it catches them. Takes several minutes per commit.
+test-conformance-replay:
+	${Q}${SOURCE_DIR}/_support/conformance-replay.sh ${CONFORMANCE_REPLAY_DIR}
+
 .PHONY: debug-test-go
 ## Run Go tests in delve debugger.
 debug-test-go: prepare-tests prepare-debug
