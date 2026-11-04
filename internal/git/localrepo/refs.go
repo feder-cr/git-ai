@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/git"
@@ -211,8 +214,16 @@ func (repo *Repo) ResolveReferenceExactly(ctx context.Context, reference git.Ref
 // chain is a cycle or too long, is returned as it is: no update can write it, and git-update-ref(1)
 // says why.
 func (repo *Repo) WrittenReference(ctx context.Context, reference git.ReferenceName) (git.ReferenceName, error) {
+	mayBeSymbolic, err := repo.mayBeSymbolic(ctx, reference)
+	if err != nil {
+		return "", err
+	}
+	if !mayBeSymbolic {
+		return reference, nil
+	}
+
 	var stdout, stderr bytes.Buffer
-	err := repo.ExecAndWait(ctx, gitcmd.Command{
+	err = repo.ExecAndWait(ctx, gitcmd.Command{
 		Name:  "symbolic-ref",
 		Flags: []gitcmd.Option{gitcmd.Flag{Name: "--quiet"}},
 		Args:  []string{reference.String()},
@@ -232,6 +243,41 @@ func (repo *Repo) WrittenReference(ctx context.Context, reference git.ReferenceN
 		return reference, nil
 	}
 	return "", fmt.Errorf("symbolic-ref %q: %w, stderr: %q", reference, err, stderr.String())
+}
+
+// mayBeSymbolic tells whether reference has to be asked of git to know if it is symbolic. Every write
+// of every RPC asks, nearly always of a plain branch, so the files backend answers without a process:
+// git never packs a symbolic reference, so one is a loose file that starts with "ref:". The other
+// backends are read by git only.
+func (repo *Repo) mayBeSymbolic(ctx context.Context, reference git.ReferenceName) (bool, error) {
+	backend, err := repo.ReferenceBackend(ctx)
+	if err != nil {
+		return false, fmt.Errorf("detecting reference backend: %w", err)
+	}
+	if backend.Name != git.ReferenceBackendFiles.Name {
+		return true, nil
+	}
+
+	// The name becomes a path below: one that is no reference name stays inside the question.
+	if err := git.ValidateReference(reference.String()); err != nil {
+		return false, nil //nolint:nilerr // No update can write it, and git-update-ref(1) says why.
+	}
+
+	repoPath, err := repo.Path(ctx)
+	if err != nil {
+		return false, fmt.Errorf("getting repository path: %w", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(repoPath, reference.String()))
+	switch {
+	case err == nil:
+		return bytes.HasPrefix(content, []byte("ref:")), nil
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ENOTDIR), errors.Is(err, syscall.EISDIR):
+		// Packed, missing, or a directory of references: not symbolic.
+		return false, nil
+	default:
+		return false, fmt.Errorf("reading loose reference: %w", err)
+	}
 }
 
 // ReflogExists reports whether the reference named reference has a reflog, with `git reflog

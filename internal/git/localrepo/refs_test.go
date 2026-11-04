@@ -267,6 +267,23 @@ func TestRepo_WrittenReference(t *testing.T) {
 		})
 	}
 
+	t.Run("packed references", func(t *testing.T) {
+		gittest.Exec(t, cfg, "-C", repoPath, "pack-refs", "--all")
+
+		for reference, expected := range map[git.ReferenceName]git.ReferenceName{
+			"refs/heads/main":  "refs/heads/main",
+			"refs/heads/one":   "refs/heads/target",
+			"refs/heads/chain": "refs/heads/target",
+			// A name below a branch, and a directory of references, are not symbolic either.
+			"refs/heads/main/below": "refs/heads/main/below",
+			"refs/heads":            "refs/heads",
+		} {
+			written, err := repo.WrittenReference(ctx, reference)
+			require.NoError(t, err)
+			require.Equal(t, expected, written, reference)
+		}
+	})
+
 	t.Run("what git update-ref moves", func(t *testing.T) {
 		written, err := repo.WrittenReference(ctx, "refs/heads/chain")
 		require.NoError(t, err)
