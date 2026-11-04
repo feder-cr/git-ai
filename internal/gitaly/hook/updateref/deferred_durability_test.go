@@ -29,6 +29,8 @@ type durabilityVoter struct {
 	ended    *int
 }
 
+func (durabilityVoter) TransactionStarts(context.Context, gitcmd.HooksPayload) {}
+
 func (durabilityVoter) Preparing(context.Context, gitcmd.HooksPayload, []byte) {}
 
 func (durabilityVoter) Prepared(context.Context, gitcmd.HooksPayload, []byte, changelog.Meta) error {

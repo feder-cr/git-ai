@@ -49,6 +49,10 @@ func (v *recordingVoter) recordedInvocations() []string {
 	return append([]string(nil), v.invocations...)
 }
 
+func (v *recordingVoter) TransactionStarts(_ context.Context, payload gitcmd.HooksPayload) {
+	v.record("starts", payload)
+}
+
 func (v *recordingVoter) Preparing(_ context.Context, payload gitcmd.HooksPayload, _ []byte) {
 	v.record("preparing", payload)
 }
@@ -109,8 +113,8 @@ func TestReferenceTransactionHook_storageVoterInvocation(t *testing.T) {
 		require.NoError(t, manager.ReferenceTransactionHook(ctx, state, []string{env}, strings.NewReader(changes)))
 	}
 
-	require.Equal(t, []string{"preparing", "prepared", "committed", "aborted"}, voter.recorded())
-	require.Equal(t, []string{"the-invocation", "the-invocation", "the-invocation", "the-invocation"}, voter.recordedInvocations())
+	require.Equal(t, []string{"starts", "preparing", "prepared", "committed", "aborted"}, voter.recorded())
+	require.Equal(t, []string{"the-invocation", "the-invocation", "the-invocation", "the-invocation", "the-invocation"}, voter.recordedInvocations())
 }
 
 // TestReferenceTransactionHook_storageVoterPhases checks that the hook manager
@@ -131,12 +135,12 @@ func TestReferenceTransactionHook_storageVoterPhases(t *testing.T) {
 	}{
 		{
 			desc: "every phase reaches the storage core",
-			want: []string{"preparing", "prepared", "committed"},
+			want: []string{"starts", "preparing", "prepared", "committed"},
 		},
 		{
-			desc:   "a denied transaction is neither prepared nor committed",
+			desc:   "a denied transaction is neither prepared nor committed, but it starts",
 			policy: []config.GraftPolicyRule{{Refs: []string{"refs/heads/main"}, Allow: false}},
-			want:   nil,
+			want:   []string{"starts"},
 			denied: true,
 		},
 	} {

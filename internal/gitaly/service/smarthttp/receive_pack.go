@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/featureflag"
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
 	"github.com/feder-cr/git-ai/internal/git/stats"
@@ -75,13 +76,12 @@ func (s *server) postReceivePack(
 		return resp.GetData(), err
 	})
 
+	var copied func()
 	if featureflag.ReceivePackStats.IsEnabled(ctx) {
-		// The deferred call runs after cmd.Wait() has drained stdin, so the
-		// capture is complete by the time it is read.
 		statsCapture := &stats.PrefixCapture{}
-		defer func() {
+		copied = func() {
 			stats.RecordReceivePack(ctx, s.logger, statsCapture.Bytes(), s.receivePackObjectsMetrics)
-		}()
+		}
 		stdin = io.TeeReader(stdin, statsCapture)
 	}
 
@@ -106,13 +106,21 @@ func (s *server) postReceivePack(
 		return fmt.Errorf("detecting object hash: %w", err)
 	}
 
+	// The end of receive-pack ends what it holds, its admission to the reference lock among them,
+	// whether or not the client closed its stream.
+	detachedStdin, err := command.DetachStdin(stdin, copied)
+	if err != nil {
+		return fmt.Errorf("detaching stdin: %w", err)
+	}
+	defer detachedStdin.Close()
+
 	cmd, err := repo.Exec(ctx,
 		gitcmd.Command{
 			Name:  "receive-pack",
 			Flags: []gitcmd.Option{gitcmd.Flag{Name: "--stateless-rpc"}},
 			Args:  []string{repoPath},
 		},
-		gitcmd.WithStdin(stdin),
+		gitcmd.WithStdin(detachedStdin),
 		gitcmd.WithStdout(stdout),
 		gitcmd.WithReceivePackHooks(objectHash, req, "http"),
 		gitcmd.WithGitProtocol(s.logger, req),

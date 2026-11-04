@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,8 +23,10 @@ import (
 	"github.com/feder-cr/git-ai/internal/git/gittest"
 	"github.com/feder-cr/git-ai/internal/git/localrepo"
 	"github.com/feder-cr/git-ai/internal/gitaly/config"
+	"github.com/feder-cr/git-ai/internal/gitaly/hook"
 	"github.com/feder-cr/git-ai/internal/gitaly/service/setup"
 	"github.com/feder-cr/git-ai/internal/gitlab"
+	"github.com/feder-cr/git-ai/internal/graft/changelog"
 	"github.com/feder-cr/git-ai/internal/graft/corestore"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/coretest"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/localrefs"
@@ -180,28 +185,154 @@ func TestAdmissionEndsWithTheProcess(t *testing.T) {
 	})
 }
 
-// TestAdmissionOfTheNextTransactionOfAProcess verifies that a process that goes on after a transaction
-// git did not report does not queue behind itself.
-func TestAdmissionOfTheNextTransactionOfAProcess(t *testing.T) {
+// TestTransactionStartsEndsTheEarlierOneOfItsProcess verifies what the start of a transaction ends of
+// an earlier transaction of its process, of which git reported nothing more: its admission, before
+// the work of the new transaction, and its pack, which does not hold the objects of the new one.
+func TestTransactionStartsEndsTheEarlierOneOfItsProcess(t *testing.T) {
 	t.Parallel()
 
 	f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, localRefs: true})
-	f.core.RefAdmission = localrefs.NewAdmission(time.Hour, time.Hour)
+	blobs := f.countPuts()
+	const earlierRef, nextRef = "refs/heads/earlier", "refs/heads/next"
 
 	p := f.startProcess(t)
-	f.voter.Preparing(f.ctx, p.payload, line(f.a.String(), f.zero, "refs/heads/stale"))
+	f.voter.TransactionStarts(f.ctx, p.payload)
+	require.Zero(t, f.releasedUnreported(t), "nothing is open yet")
+
+	f.voter.Preparing(f.ctx, p.payload, line(f.zero, f.a.String(), earlierRef))
 	require.True(t, f.admissionHeld(t))
+	require.Equal(t, 1, blobs.count())
+	require.Equal(t, 1, f.voter.PreparedPacks())
 
-	f.voter.Preparing(f.ctx, p.payload, line(f.a.String(), f.zero, "refs/heads/next"))
-	require.True(t, f.admissionHeld(t), "the next transaction holds the admission")
+	f.voter.TransactionStarts(f.ctx, p.payload)
+	require.False(t, f.admissionHeld(t), "the writers behind it do not wait for the new transaction's work")
 	require.Equal(t, 1.0, f.releasedUnreported(t))
-	require.Equal(t, 0.0, metricValue(t, f.core.RefAdmission, bypassedMetric, nil))
+	require.Zero(t, f.voter.PreparedPacks())
 
-	f.voter.Committed(f.ctx, p.payload, line(f.a.String(), f.zero, "refs/heads/next"))
-	require.False(t, f.admissionHeld(t))
+	// The Preparing phase of the new transaction may be skipped: Prepared builds the pack.
+	next := line(f.zero, f.c.String(), nextRef)
+	require.NoError(t, f.voter.Prepared(f.ctx, p.payload, next, changelog.Meta{Operation: "test", Actor: "tester"}))
+	require.Equal(t, 2, blobs.count())
+	require.Equal(t, blobs.puts[1], f.lastChangeset(t).PackKey)
+}
 
-	p.end()
-	require.Equal(t, 1.0, f.releasedUnreported(t))
+// TestPackOfATransactionWhoseInputChanges verifies that the pack of the Preparing phase serves the
+// Prepared phase of the same process also when the hook input of that phase differs from the input
+// of Preparing.
+func TestPackOfATransactionWhoseInputChanges(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative})
+	blobs := f.countPuts()
+
+	p := f.startProcess(t)
+	both := append(line(f.zero, f.c.String(), "refs/heads/kept"), line(f.zero, f.b.String(), "refs/heads/rejected")...)
+	f.voter.Preparing(f.ctx, p.payload, both)
+	require.Equal(t, 1, blobs.count())
+
+	require.NoError(t, f.voter.Prepared(f.ctx, p.payload, line(f.zero, f.c.String(), "refs/heads/kept"), changelog.Meta{Operation: "test", Actor: "tester"}))
+	require.Equal(t, 1, blobs.count(), "Prepared uses the pack of Preparing")
+	require.Equal(t, blobs.puts[0], f.lastChangeset(t).PackKey)
+	require.Zero(t, f.voter.PreparedPacks())
+}
+
+// failedPruneHooks makes the prune of a git fetch --prune fail in git's prepare, after the preparing
+// phase of its transaction: the reftable lock of the repository exists from the end of that phase to
+// the start of the next preparing phase. It records the phases of the fetch.
+type failedPruneHooks struct {
+	hook.Manager
+	lock  string
+	armed atomic.Bool
+
+	mu     sync.Mutex
+	phases []hook.ReferenceTransactionState
+}
+
+func (m *failedPruneHooks) ReferenceTransactionHook(ctx context.Context, state hook.ReferenceTransactionState, env []string, stdin io.Reader) error {
+	if !m.armed.Load() {
+		return m.Manager.ReferenceTransactionHook(ctx, state, env, stdin)
+	}
+
+	m.mu.Lock()
+	m.phases = append(m.phases, state)
+	preparings := 0
+	for _, phase := range m.phases {
+		if phase == hook.ReferenceTransactionPreparing {
+			preparings++
+		}
+	}
+	m.mu.Unlock()
+
+	if state == hook.ReferenceTransactionPreparing && preparings == 2 {
+		if err := os.Remove(m.lock); err != nil {
+			return err
+		}
+	}
+	err := m.Manager.ReferenceTransactionHook(ctx, state, env, stdin)
+	if state == hook.ReferenceTransactionPreparing && preparings == 1 {
+		if lockErr := os.WriteFile(m.lock, nil, 0o600); lockErr != nil {
+			return lockErr
+		}
+	}
+	return err
+}
+
+// TestAdmissionOfAFetchWhosePruneFailed runs a real git fetch --prune whose prune fails in git's
+// prepare, after its preparing phase and without an aborted phase, and which then goes on to the
+// transaction of the fetch in the same process. That transaction must not queue behind the first one:
+// the bounds of the admission are an hour, so it would hang until the context of the test ends.
+func TestAdmissionOfAFetchWhosePruneFailed(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, dialect sqlstore.Dialect) {
+		hooks := &failedPruneHooks{}
+		s := newAdmissionServer(t, dialect, testserver.WithHookManagerWrapper(func(manager hook.Manager) hook.Manager {
+			hooks.Manager = manager
+			return hooks
+		}))
+		hooks.lock = filepath.Join(s.repoPath, "reftable", "tables.list.lock")
+
+		gone := gittest.WriteCommit(t, s.cfg, s.repoPath, gittest.WithMessage("gone"))
+		s.createBranch(t, "gone", gone)
+
+		_, sourcePath := gittest.CreateRepository(t, s.ctx, s.cfg, gittest.CreateRepositoryConfig{SkipCreationViaService: true})
+		fetched := gittest.WriteCommit(t, s.cfg, sourcePath, gittest.WithBranch("fetched"), gittest.WithMessage("fetched"))
+
+		objectHash, err := s.repo.ObjectHash(s.ctx)
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithTimeout(s.ctx, 2*time.Minute)
+		defer cancel()
+
+		hooks.armed.Store(true)
+		var stderr bytes.Buffer
+		// The exit status tells of the failed prune; the phases below are the point.
+		_ = s.repo.ExecAndWait(ctx, gitcmd.Command{
+			Name:  "fetch",
+			Flags: []gitcmd.Option{gitcmd.Flag{Name: "--prune"}},
+			Args:  []string{sourcePath, "+refs/heads/*:refs/heads/*"},
+		},
+			gitcmd.WithRefTxHook(objectHash, s.repo),
+			gitcmd.WithConfig(gitcmd.ConfigPair{Key: "reftable.lockTimeout", Value: "0"}),
+			gitcmd.WithStderr(&stderr),
+		)
+		hooks.armed.Store(false)
+
+		require.Equal(t, []hook.ReferenceTransactionState{
+			hook.ReferenceTransactionPreparing,
+			hook.ReferenceTransactionPreparing,
+			hook.ReferenceTransactionPrepared,
+			hook.ReferenceTransactionCommitted,
+		}, hooks.phases, "stderr: %s", stderr.String())
+
+		refs, _, err := s.core.Meta.Refs(s.ctx, s.repoID)
+		require.NoError(t, err)
+		require.Equal(t, corestore.Target(fetched.String()), refs["refs/heads/fetched"])
+		require.Equal(t, corestore.Target(gone.String()), refs["refs/heads/gone"], "the prune failed")
+
+		s.requireAdmissionFree(t)
+		require.Equal(t, 1.0, metricValue(t, s.core.RefAdmission, releasedUnreportedMetric, nil), "git reported no end of the prune")
+		require.Equal(t, 0.0, metricValue(t, s.core.RefAdmission, bypassedMetric, nil))
+		require.Equal(t, 0.0, metricValue(t, s.core.RefAdmission, expiredMetric, nil))
+	})
 }
 
 // TestAdmissionOfAHookThatOutlivedItsProcess verifies that a hook call that arrives after git was
@@ -343,6 +474,70 @@ func TestAdmissionExitRacingTheHandOver(t *testing.T) {
 	}
 }
 
+// TestAdmissionExitRacingTheHandOverOfThreeWriters queues three writers behind a holder and ends the
+// holder and the first of them. The second must then hold the admission and the third stay queued,
+// whichever way the end of the first writer's process meets its hand-over: its writer can be admitted
+// while it gives up, after the end of its process handed the admission on.
+func TestAdmissionExitRacingTheHandOverOfThreeWriters(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, localRefs: true})
+	f.core.RefAdmission = localrefs.NewAdmission(time.Hour, time.Hour)
+	input := line(f.a.String(), f.zero, "refs/heads/main")
+
+	round := func(t *testing.T, ends func(holder, w process)) {
+		t.Helper()
+
+		holder := f.startProcess(t)
+		f.voter.Preparing(f.ctx, holder.payload, input)
+
+		start := func(p process, queuedBefore float64) chan struct{} {
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				f.voter.Preparing(f.ctx, p.payload, input)
+			}()
+			requireWaiting(t, f.core.RefAdmission, queuedBefore+1)
+			return done
+		}
+		w, x, y := f.startProcess(t), f.startProcess(t), f.startProcess(t)
+		wDone := start(w, 0)
+		xDone := start(x, 1)
+		yDone := start(y, 2)
+
+		ends(holder, w)
+		<-wDone
+		<-xDone
+
+		// The second hand-over of W happens before W returns.
+		require.Equal(t, 1.0, metricValue(t, f.core.RefAdmission, waitingMetric, nil), "Y waits behind X")
+
+		x.end()
+		<-yDone
+		y.end()
+		require.False(t, f.admissionHeld(t))
+	}
+
+	for i := 0; i < 200; i++ {
+		round(t, func(holder, w process) {
+			holder.end()
+			w.end()
+		})
+	}
+	for i := 0; i < 200; i++ {
+		round(t, func(holder, w process) {
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				holder.end()
+			}()
+			w.end()
+			wg.Wait()
+		})
+	}
+}
+
 // admissionServer is a Gitaly server in authoritative mode with real hooks, whose admission has
 // bounds of an hour: nothing in a test can depend on them, and a turn that is not released stays held.
 type admissionServer struct {
@@ -357,7 +552,7 @@ type admissionServer struct {
 	repo *localrepo.Repo
 }
 
-func newAdmissionServer(t *testing.T, dialect sqlstore.Dialect) *admissionServer {
+func newAdmissionServer(t *testing.T, dialect sqlstore.Dialect, opts ...testserver.GitalyServerOpt) *admissionServer {
 	t.Helper()
 
 	ctx := testhelper.Context(t)
@@ -368,10 +563,10 @@ func newAdmissionServer(t *testing.T, dialect sqlstore.Dialect) *admissionServer
 
 	core := coretest.Open(t, coretest.Options{Mode: corestore.ModeAuthoritative, Dialect: dialect})
 	core.RefAdmission = localrefs.NewAdmission(time.Hour, time.Hour)
-	addr := testserver.RunGitalyServer(t, cfg, setup.RegisterAll,
+	addr := testserver.RunGitalyServer(t, cfg, setup.RegisterAll, append([]testserver.GitalyServerOpt{
 		testserver.WithGraftStorage(core),
 		testserver.WithGitLabClient(gitlab.NewStandaloneClient(cfg.Graft, testhelper.SharedLogger(t))),
-	)
+	}, opts...)...)
 	cfg.SocketPath = addr
 
 	conn, err := client.New(ctx, addr)
@@ -420,6 +615,90 @@ func (s *admissionServer) requireAdmissionFree(t *testing.T) {
 	s.core.RefAdmission.Release(s.repoPath, probe)
 }
 
+// pushTransports push a request body through the server, and return what receive-pack wrote.
+var pushTransports = map[string]func(t *testing.T, ctx context.Context, s *admissionServer, body []byte, closeSend bool) (string, error){
+	"smart HTTP": func(t *testing.T, ctx context.Context, s *admissionServer, body []byte, closeSend bool) (string, error) {
+		stream, err := gitalypb.NewSmartHTTPServiceClient(s.conn).PostReceivePack(ctx)
+		require.NoError(t, err)
+		require.NoError(t, stream.Send(&gitalypb.PostReceivePackRequest{
+			Repository: s.repoProto, GlId: gittest.GlID, GlRepository: gittest.GlRepository,
+		}))
+		require.NoError(t, stream.Send(&gitalypb.PostReceivePackRequest{Data: body}))
+		if closeSend {
+			require.NoError(t, stream.CloseSend())
+		}
+
+		var output []byte
+		for {
+			response, err := stream.Recv()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+				return string(output), err
+			}
+			output = append(output, response.GetData()...)
+		}
+	},
+	"SSH": func(t *testing.T, ctx context.Context, s *admissionServer, body []byte, closeSend bool) (string, error) {
+		stream, err := gitalypb.NewSSHServiceClient(s.conn).SSHReceivePack(ctx)
+		require.NoError(t, err)
+		require.NoError(t, stream.Send(&gitalypb.SSHReceivePackRequest{
+			Repository: s.repoProto, GlId: gittest.GlID, GlRepository: gittest.GlRepository,
+		}))
+		require.NoError(t, stream.Send(&gitalypb.SSHReceivePackRequest{Stdin: body}))
+		if closeSend {
+			require.NoError(t, stream.CloseSend())
+		}
+
+		var output []byte
+		for {
+			response, err := stream.Recv()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+				return string(output), err
+			}
+			output = append(output, response.GetStdout()...)
+		}
+	},
+}
+
+// TestPushOfAClientThatKeepsItsStreamOpen pushes a stale atomic push and never closes the request
+// stream. receive-pack has all it needs and exits, so the RPC ends and the admission is free at once:
+// otherwise a client holds the repository up to the hold bound with every push.
+func TestPushOfAClientThatKeepsItsStreamOpen(t *testing.T) {
+	for name, push := range pushTransports {
+		t.Run(name, func(t *testing.T) {
+			s := newAdmissionServer(t, sqlstore.SQLite)
+
+			first := gittest.WriteCommit(t, s.cfg, s.repoPath, gittest.WithMessage("first"))
+			second := gittest.WriteCommit(t, s.cfg, s.repoPath, gittest.WithMessage("second"), gittest.WithParents(first))
+			stale := gittest.WriteCommit(t, s.cfg, s.repoPath, gittest.WithMessage("stale"), gittest.WithParents(first))
+			s.createBranch(t, "pushed", first)
+
+			emptyPack := gittest.ExecOpts(t, s.cfg, gittest.ExecConfig{Stdin: strings.NewReader("")},
+				"-C", s.repoPath, "pack-objects", "--stdout", "-q")
+			pkt := fmt.Sprintf("%s %s refs/heads/pushed\x00 report-status atomic\n", stale, second)
+			var body bytes.Buffer
+			fmt.Fprintf(&body, "%04x%s0000", len(pkt)+4, pkt)
+			body.Write(emptyPack)
+
+			// The bound only stops a test that went wrong.
+			ctx, cancel := context.WithTimeout(s.ctx, time.Minute)
+			defer cancel()
+
+			output, err := push(t, ctx, s, body.Bytes(), false)
+			require.NoError(t, err, "the RPC ends with the process")
+			require.Contains(t, output, "ng refs/heads/pushed")
+
+			s.requireAdmissionFree(t)
+			require.Equal(t, 1.0, metricValue(t, s.core.RefAdmission, releasedUnreportedMetric, nil))
+		})
+	}
+}
+
 // TestStalePushReleasesTheAdmission pushes over smart HTTP and over SSH through the server, with
 // real git receive-pack processes and hooks. An atomic push with a stale old value fails in git's
 // prepare, after the preparing phase of the hook and without an aborted phase, and receive-pack
@@ -427,52 +706,7 @@ func (s *admissionServer) requireAdmissionFree(t *testing.T) {
 // A non-atomic push tolerates the rejection in git's prepare, reaches the prepared phase, and the
 // database refuses it: git reports that abort, and the admission ends with it.
 func TestStalePushReleasesTheAdmission(t *testing.T) {
-	transports := map[string]func(t *testing.T, ctx context.Context, s *admissionServer, body []byte) (string, error){
-		"smart HTTP": func(t *testing.T, ctx context.Context, s *admissionServer, body []byte) (string, error) {
-			stream, err := gitalypb.NewSmartHTTPServiceClient(s.conn).PostReceivePack(ctx)
-			require.NoError(t, err)
-			require.NoError(t, stream.Send(&gitalypb.PostReceivePackRequest{
-				Repository: s.repoProto, GlId: gittest.GlID, GlRepository: gittest.GlRepository,
-			}))
-			require.NoError(t, stream.Send(&gitalypb.PostReceivePackRequest{Data: body}))
-			require.NoError(t, stream.CloseSend())
-
-			var output []byte
-			for {
-				response, err := stream.Recv()
-				if err != nil {
-					if errors.Is(err, io.EOF) {
-						err = nil
-					}
-					return string(output), err
-				}
-				output = append(output, response.GetData()...)
-			}
-		},
-		"SSH": func(t *testing.T, ctx context.Context, s *admissionServer, body []byte) (string, error) {
-			stream, err := gitalypb.NewSSHServiceClient(s.conn).SSHReceivePack(ctx)
-			require.NoError(t, err)
-			require.NoError(t, stream.Send(&gitalypb.SSHReceivePackRequest{
-				Repository: s.repoProto, GlId: gittest.GlID, GlRepository: gittest.GlRepository,
-			}))
-			require.NoError(t, stream.Send(&gitalypb.SSHReceivePackRequest{Stdin: body}))
-			require.NoError(t, stream.CloseSend())
-
-			var output []byte
-			for {
-				response, err := stream.Recv()
-				if err != nil {
-					if errors.Is(err, io.EOF) {
-						err = nil
-					}
-					return string(output), err
-				}
-				output = append(output, response.GetStdout()...)
-			}
-		},
-	}
-
-	for name, push := range transports {
+	for name, push := range pushTransports {
 		t.Run(name, func(t *testing.T) {
 			forEachDialect(t, func(t *testing.T, dialect sqlstore.Dialect) {
 				s := newAdmissionServer(t, dialect)
@@ -496,7 +730,7 @@ func TestStalePushReleasesTheAdmission(t *testing.T) {
 
 				// A turn that stays held would make the next push wait for an hour: stop at the failure.
 				require.True(t, t.Run("a stale atomic push, then a second writer", func(t *testing.T) {
-					output, err := push(t, ctx, s, body("report-status atomic"))
+					output, err := push(t, ctx, s, body("report-status atomic"), true)
 					require.NoError(t, err, "receive-pack reports the failure and exits normally")
 					require.Contains(t, output, "ng refs/heads/pushed")
 
@@ -510,7 +744,7 @@ func TestStalePushReleasesTheAdmission(t *testing.T) {
 				}))
 
 				t.Run("a stale non-atomic push, then a second writer", func(t *testing.T) {
-					_, err := push(t, ctx, s, body("report-status"))
+					_, err := push(t, ctx, s, body("report-status"), true)
 					require.Error(t, err, "the database refuses the rejected update in the prepared phase, and git dies")
 
 					s.requireAdmissionFree(t)

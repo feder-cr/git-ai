@@ -54,6 +54,17 @@ func BeginInvocation(invocation string) (end func()) {
 	}
 }
 
+// InvocationLive reports whether invocation has not ended. An end declared before this call has
+// taken the invocation out already, whether or not its function has run; one that comes later still
+// calls the function set with OnInvocationExit.
+func InvocationLive(invocation string) bool {
+	liveInvocations.Lock()
+	defer liveInvocations.Unlock()
+
+	_, live := liveInvocations.exit[invocation]
+	return live
+}
+
 // OnInvocationExit sets the function to call when invocation ends, replacing the one set before. It
 // reports false, and sets nothing, when the invocation is not live: its process has exited already
 // (a hook that outlived a killed git process), or another process owns it. Whatever the interleaving

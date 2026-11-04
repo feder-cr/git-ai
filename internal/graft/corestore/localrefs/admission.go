@@ -62,6 +62,9 @@ type Admission struct {
 	// onWait is called when a writer starts waiting; tests set it to know that
 	// a writer is queued.
 	onWait func(path string)
+	// onGiveUp is called when a writer stopped waiting, before it takes the lock;
+	// tests set it to have the queue change at that point.
+	onGiveUp func(path string)
 
 	wait     *prometheus.HistogramVec
 	waiting  prometheus.Gauge
@@ -170,14 +173,23 @@ func (a *Admission) Acquire(ctx context.Context, path string, key Key, writer st
 		cancelled = true
 	}
 
+	if a.onGiveUp != nil {
+		a.onGiveUp(path)
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	select {
 	case <-t.admitted:
-		// Admitted while giving up.
+		// Admitted while giving up. The admission may have ended meanwhile, by a
+		// release or the hold bound, and then belongs to a later writer, in this
+		// queue or in a newer one of the repository.
 		if cancelled {
-			a.handOffLocked(path, q)
+			if a.queues[path] == q && q.holder == t {
+				t.expiry.Stop()
+				a.handOffLocked(path, q)
+			}
 			return false
 		}
 		a.wait.WithLabelValues(writer).Observe(time.Since(start).Seconds())

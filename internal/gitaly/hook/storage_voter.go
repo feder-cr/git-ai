@@ -12,6 +12,10 @@ import (
 // (internal/graft/corestore/voter), called from the reference-transaction
 // hook. See doc/graft/PLAN6.md, "Write path".
 type StorageVoter interface {
+	// TransactionStarts is called first thing in the Preparing phase of a transaction,
+	// before anything that can skip the rest of the phase. A transaction of the same
+	// process that is still open then has ended, without a report from git.
+	TransactionStarts(ctx context.Context, payload gitcmd.HooksPayload)
 	// Preparing does the slow work of the transaction (building and uploading
 	// its pack) before git takes the reference locks. It never fails the
 	// transaction: when it did not complete, Prepared does that work itself.

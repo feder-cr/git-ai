@@ -69,6 +69,23 @@ func TestInvocationLifecycle(t *testing.T) {
 		require.False(t, gitcmd.OnInvocationExit(newInvocation(t), func() {}))
 	})
 
+	t.Run("an invocation is live until its end", func(t *testing.T) {
+		t.Parallel()
+
+		invocation := newInvocation(t)
+		require.False(t, gitcmd.InvocationLive(invocation))
+
+		end := gitcmd.BeginInvocation(invocation)
+		require.True(t, gitcmd.InvocationLive(invocation))
+
+		// The function of the end sees it as ended already.
+		var liveInExit bool
+		require.True(t, gitcmd.OnInvocationExit(invocation, func() { liveInExit = gitcmd.InvocationLive(invocation) }))
+		end()
+		require.False(t, liveInExit)
+		require.False(t, gitcmd.InvocationLive(invocation))
+	})
+
 	t.Run("the empty invocation is none", func(t *testing.T) {
 		t.Parallel()
 

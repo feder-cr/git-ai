@@ -57,6 +57,10 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 	// which HooksPayloadFromEnv does not restore.
 	payload.Changelog.Invocation = changesetInvocation(env)
 
+	if state == ReferenceTransactionPreparing && m.storageVoter != nil {
+		m.storageVoter.TransactionStarts(ctx, payload)
+	}
+
 	m.trackPendingTransaction(state, env, changes)
 
 	var phase voting.Phase
