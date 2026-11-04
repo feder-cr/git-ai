@@ -202,7 +202,7 @@ func TestConformanceAgentWritesThroughSymbolicBranches(t *testing.T) {
 						before := f.refs()
 						err := rpc.call(backend.ctx, operations{client, f}, alias)
 						changed := changedRefs(before, f.refs())
-						t.Logf("MATRIX %s %s %s -> %s: %s, changed %v", mode.name, rpc.name, alias, target, outcome(err), changed)
+						t.Logf("MATRIX %s %s %s -> %s: %v, changed %v\n%s", mode.name, rpc.name, alias, target, err, changed, f.session.log.String())
 
 						want := []string{}
 						if _, moves := symbolicWrites[rpc.name+"/"+alias]; moves {
