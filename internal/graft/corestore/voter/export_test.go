@@ -6,6 +6,10 @@ import (
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
 
+// SetBeforeAcquire sets the function called right before a transaction with an invocation takes its
+// admission.
+func SetBeforeAcquire(v *Voter, f func()) { v.beforeAcquire = f }
+
 // The pending set is exported to the external tests of the package.
 
 // PendingTTL and MaxPendingEntries bound the pending set.

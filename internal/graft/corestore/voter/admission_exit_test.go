@@ -26,6 +26,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/graft/corestore/coretest"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/localrefs"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/sqlstore"
+	"github.com/feder-cr/git-ai/internal/graft/corestore/voter"
 	"github.com/feder-cr/git-ai/internal/grpc/client"
 	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/internal/testhelper/testcfg"
@@ -286,6 +287,23 @@ func TestAdmissionLateReleaseDoesNotFreeTheNextWriter(t *testing.T) {
 	require.Equal(t, 1.0, f.releasedUnreported(t), "B reported its end")
 }
 
+// TestAdmissionOfAProcessThatEndsBeforeItsAcquire ends the process between the moment the voter set
+// the release and its Acquire. The release finds nothing and Acquire admits at once, also with its
+// context cancelled, so the voter itself must give the admission back.
+func TestAdmissionOfAProcessThatEndsBeforeItsAcquire(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, localRefs: true})
+	input := line(f.a.String(), f.zero, "refs/heads/main")
+
+	p := f.startProcess(t)
+	voter.SetBeforeAcquire(f.voter, p.end)
+	f.voter.Preparing(f.ctx, p.payload, input)
+
+	require.False(t, f.admissionHeld(t))
+	require.Equal(t, 1.0, f.releasedUnreported(t))
+}
+
 // TestAdmissionExitRacingTheHandOver races the end of a queued writer's process with its hand-over,
 // the interleaving in which the release of the exit comes before the writer holds the admission.
 // The admission must never stay held by a process that ended.
@@ -476,7 +494,8 @@ func TestStalePushReleasesTheAdmission(t *testing.T) {
 
 				ctx := s.ctx
 
-				t.Run("a stale atomic push, then a second writer", func(t *testing.T) {
+				// A turn that stays held would make the next push wait for an hour: stop at the failure.
+				require.True(t, t.Run("a stale atomic push, then a second writer", func(t *testing.T) {
 					output, err := push(t, ctx, s, body("report-status atomic"))
 					require.NoError(t, err, "receive-pack reports the failure and exits normally")
 					require.Contains(t, output, "ng refs/heads/pushed")
@@ -488,7 +507,7 @@ func TestStalePushReleasesTheAdmission(t *testing.T) {
 
 					require.NoError(t, s.repo.UpdateRef(ctx, "refs/heads/next", second, gittest.DefaultObjectHash.ZeroOID))
 					s.requireAdmissionFree(t)
-				})
+				}))
 
 				t.Run("a stale non-atomic push, then a second writer", func(t *testing.T) {
 					_, err := push(t, ctx, s, body("report-status"))

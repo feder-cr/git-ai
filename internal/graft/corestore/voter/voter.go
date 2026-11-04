@@ -101,6 +101,9 @@ type Voter struct {
 	// its Prepared or Aborted phase.
 	packs   *pendingSet[preparedPack]
 	metrics *metrics
+	// beforeAcquire is called right before a transaction with an invocation takes
+	// its admission; tests set it to end the process at that point.
+	beforeAcquire func()
 }
 
 // committedEntry is a transaction committed to the database in Prepared.
@@ -948,6 +951,10 @@ func (v *Voter) admit(ctx context.Context, payload gitcmd.HooksPayload, changes 
 	// A process runs one transaction at a time, so its earlier one has ended. A
 	// process that goes on after a prepare that failed must not queue behind itself.
 	releaseUnreported()
+
+	if v.beforeAcquire != nil {
+		v.beforeAcquire()
+	}
 
 	if v.core.RefAdmission.Acquire(ctx, repoPath, key, localrefs.WriterHook) && ctx.Err() != nil {
 		processExited()
