@@ -565,7 +565,44 @@ func TestUserLand_aRuleSlowerThanTheTimeoutLandsOnAHotFile(t *testing.T) {
 	t.Parallel()
 
 	const stream = 60
-	q := newQueueFixtureMode(t, stream, "slowrule", func(c *config.GraftResolver) { c.InlineTimeout = "500ms" })
+	var s *Server
+	operationServerHooks.Store(t.Name(), func(served *Server) { s = served })
+	// No clock cuts a call, and nothing here waits for a duration: the slow rule is cut by the test, each time the
+	// resolver has started it in the lane (it has logged it in inline-slow.log), and the test waits for the lands
+	// to end, a hang being the test binary's own timeout to report. (With a real 500 ms a loaded machine cut the
+	// fast calls too, and 60 lands then took longer than any bound written here.)
+	q := newQueueFixtureMode(t, stream, "slowrule", func(c *config.GraftResolver) { c.InlineTimeout = "30s" })
+	require.NotNil(t, s)
+	var mu sync.Mutex
+	var inflight []context.CancelFunc
+	s.landInlineCallContext = func(ctx context.Context, allowed time.Duration) (context.Context, context.CancelFunc) {
+		callCtx, cancel := context.WithTimeout(ctx, allowed)
+		mu.Lock()
+		defer mu.Unlock()
+		inflight = append(inflight, cancel)
+		return callCtx, cancel
+	}
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		cut := 0
+		for {
+			raw, _ := os.ReadFile(filepath.Join(q.dir, "inline-slow.log"))
+			if started := len(raw) / 2; started > cut {
+				cut = started
+				mu.Lock()
+				for _, cancel := range inflight {
+					cancel()
+				}
+				mu.Unlock()
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}()
 	slow := gittest.WriteCommit(t, q.cfg, q.repoPath, gittest.WithParents(q.base),
 		gittest.WithTreeEntries(
 			gittest.TreeEntry{Mode: "100644", Path: "a", Content: "slowrule-1\n"},
@@ -576,8 +613,14 @@ func TestUserLand_aRuleSlowerThanTheTimeoutLandsOnAHotFile(t *testing.T) {
 		_, err := q.land(slow)
 		slowDone <- err
 	}()
-	// The slow land is resolving out of the lane (the lane gave up its rule at the timeout).
-	require.Eventually(t, func() bool { return unionCalls(t, q.dir)-inlineCalls(t, q.dir) >= 1 }, 60*time.Second, 5*time.Millisecond)
+	// The slow land is resolving out of the lane (the lane gave up its rule when the test cut it).
+	for unionCalls(t, q.dir)-inlineCalls(t, q.dir) < 1 {
+		select {
+		case err := <-slowDone:
+			t.Fatalf("the slow land ended before it was seen resolving out of the lane: %v", err)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 
 	var landed atomic.Int32
 	streamDone := make(chan error, 1)
@@ -592,20 +635,10 @@ func TestUserLand_aRuleSlowerThanTheTimeoutLandsOnAHotFile(t *testing.T) {
 		streamDone <- nil
 	}()
 
-	select {
-	case err := <-slowDone:
-		require.NoError(t, err, "the slow rule's land")
-	case <-time.After(120 * time.Second):
-		t.Fatal("the land with the slow rule did not end")
-	}
+	require.NoError(t, <-slowDone, "the slow rule's land")
 	require.Less(t, int(landed.Load()), stream, "the slow land landed while the stream of the others was going: they gave way")
 
-	select {
-	case err := <-streamDone:
-		require.NoError(t, err)
-	case <-time.After(120 * time.Second):
-		t.Fatal("the others did not end")
-	}
+	require.NoError(t, <-streamDone)
 	got := q.branchBlob(t, "a")
 	require.Contains(t, got, "slowrule-1")
 	require.Len(t, strings.Split(got, "\n"), stream+2, "ours, the slow rule's line and every other land's")
