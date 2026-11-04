@@ -50,6 +50,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1415,7 +1416,7 @@ func applyMoves(ctx context.Context, repo *localrepo.Repo, w refWriter, hash git
 func applyChecked(ctx context.Context, repo *localrepo.Repo, w refWriter, hash git.ObjectHash, names []string, moves map[string]move) error {
 	var removals, others []string
 	twoSteps := false
-	for _, name := range names {
+	for _, name := range withoutImpliedAbsences(names, moves) {
 		del, set := casSteps(name, moves[name], hash)
 		if del != "" {
 			removals = append(removals, del)
@@ -1440,6 +1441,63 @@ func applyChecked(ctx context.Context, repo *localrepo.Repo, w refWriter, hash g
 		return fmt.Errorf("apply removals: %w", err)
 	}
 	return refTransaction(ctx, repo, w, others)
+}
+
+// withoutImpliedAbsences returns the sorted names without the verifications of
+// an absence that another command already implies. A reference can be absent both
+// before and after a range that created and deleted it, while a name it conflicts
+// with exists: refs/a in a range that ends with refs/a/b. git applies its
+// file/directory check to the verification of an absent name too, as if it were
+// created, so it refuses it next to refs/a/b, in one transaction or with refs/a/b
+// existing, and no order of the commands would help.
+//
+// Git's own check makes that verification redundant, whichever of the two
+// conflicting names the other command is about. A command on a name that exists
+// before or after the range requires it to exist or to be creatable, which git
+// refuses while the absent name exists, and git refuses a concurrent local
+// creation of the absent name while the other one exists. The verification of
+// an absent name does the same for an absent name below it (git refuses it while
+// the name below exists). So a local write to a name left out still fails the
+// transaction or finds the name it needs taken, and the check runs again
+// (applyLocked reads every name of moves).
+//
+// Only a name that conflicts with a command that stays is left out: siblings
+// below a verification that is itself left out are verified.
+func withoutImpliedAbsences(names []string, moves map[string]move) []string {
+	absence := func(name string) bool {
+		m := moves[name]
+		return m.verify() && m.old.Absent()
+	}
+
+	// parentsOfExisting holds the parent directories of the names that exist before
+	// or after the range. names being sorted, a parent comes before its children.
+	parentsOfExisting := map[string]struct{}{}
+	for _, name := range names {
+		if !absence(name) {
+			for _, parent := range corestore.ParentRefNames(name) {
+				parentsOfExisting[parent] = struct{}{}
+			}
+		}
+	}
+
+	kept := make([]string, 0, len(names))
+	stays := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if absence(name) {
+			if _, implied := parentsOfExisting[name]; implied {
+				continue
+			}
+			if slices.ContainsFunc(corestore.ParentRefNames(name), func(parent string) bool {
+				_, ok := stays[parent]
+				return ok
+			}) {
+				continue
+			}
+		}
+		stays[name] = struct{}{}
+		kept = append(kept, name)
+	}
+	return kept
 }
 
 // refWriter runs the reference transactions of the catch-up on the local

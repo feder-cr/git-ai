@@ -240,6 +240,18 @@ func (e *ErrRefConflict) Error() string {
 		c.Name, c.Actual, c.Expected, len(e.Conflicts))
 }
 
+// ParentRefNames returns every name that is a directory of the reference name,
+// shortest first: refs and refs/heads for refs/heads/a.
+func ParentRefNames(name string) []string {
+	var parents []string
+	for i := 0; i < len(name); i++ {
+		if name[i] == '/' {
+			parents = append(parents, name[:i])
+		}
+	}
+	return parents
+}
+
 var (
 	// ErrRepositoryNotFound is returned when the database does not know the repository.
 	ErrRepositoryNotFound = errors.New("storage core: repository not found")
