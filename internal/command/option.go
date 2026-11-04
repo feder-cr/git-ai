@@ -18,6 +18,7 @@ type config struct {
 	environment []string
 
 	finalizers []func(context.Context, *Command)
+	exitHooks  []func()
 
 	commandName    string
 	subcommandName string
@@ -133,6 +134,17 @@ func WithCgroup(cgroupsManager cgroups.Manager, opts ...cgroups.AddCommandOption
 func WithFinalizer(finalizer func(context.Context, *Command)) Option {
 	return func(cfg *config) {
 		cfg.finalizers = append(cfg.finalizers, finalizer)
+	}
+}
+
+// WithExitHook sets up a function to run once the process has been reaped, however it ended: a
+// normal exit, an error, a kill through the context, or a panic in the goroutine that reaps it.
+// Unlike a finalizer it runs even when the rest of the wrap-up panics. It does not run for a
+// process that never started: New then returns an error and the caller keeps the responsibility.
+// It must not block.
+func WithExitHook(hook func()) Option {
+	return func(cfg *config) {
+		cfg.exitHooks = append(cfg.exitHooks, hook)
 	}
 }
 

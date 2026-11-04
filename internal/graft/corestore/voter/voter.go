@@ -835,7 +835,7 @@ func (v *Voter) Committed(ctx context.Context, payload gitcmd.HooksPayload, chan
 
 	// git finished the transaction, its auto-compaction included, and released
 	// the reference lock.
-	v.core.RefAdmission.Release(repoPath, localrefs.Key(key))
+	v.core.RefAdmission.Release(repoPath, admissionKey(payload, changes))
 
 	if !ok || v.applier == nil {
 		return
@@ -890,9 +890,21 @@ func (v *Voter) DeferReferenceWrites(ctx context.Context, repo *gitalypb.Reposit
 }
 
 // admit waits for the admission of the transaction to the reference lock of
-// its repository (authoritative mode). Committed or Aborted releases it. It
-// never fails the transaction: without an admission git waits for its lock as
-// before.
+// its repository (authoritative mode). It never fails the transaction: without
+// an admission git waits for its lock as before.
+//
+// Committed or Aborted releases the admission, but git reports neither for a
+// transaction whose prepare fails in git update-ref (a stale old value, a
+// reference that is gone, a lock that stayed busy), which dies without aborting
+// it, for an atomic push that fails the same way in git receive-pack, which reports
+// the failure and exits normally, nor for a killed process. So the admission belongs to the process of the transaction, known by
+// its invocation: it ends with the process at the latest, and it stands for no
+// other process, also one with the same hook input.
+//
+// A process that ended while its hook was still on its way (git was killed) holds
+// nothing: the hook leaves the queue, or is not admitted at all, and the writers
+// behind it go on. A hook call without an invocation (a direct caller of the hook
+// RPC) has no process to watch: its admission ends at the hold bound.
 func (v *Voter) admit(ctx context.Context, payload gitcmd.HooksPayload, changes []byte) {
 	if !v.core.Authoritative() || v.core.RefAdmission == nil {
 		return
@@ -903,7 +915,56 @@ func (v *Voter) admit(ctx context.Context, payload gitcmd.HooksPayload, changes 
 		v.logger.WithError(err).WarnContext(ctx, "storage core: resolving the repository path for the admission, the transaction goes on without it")
 		return
 	}
-	v.core.RefAdmission.Acquire(ctx, repoPath, localrefs.Key(pendingKey(payload.Repo, changes)), localrefs.WriterHook)
+
+	key := admissionKey(payload, changes)
+	invocation := payload.Changelog.Invocation
+	if invocation == "" {
+		v.core.RefAdmission.Acquire(ctx, repoPath, key, localrefs.WriterHook)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	releaseUnreported := func() {
+		if v.core.RefAdmission.ReleaseUnreported(repoPath, key) {
+			v.logger.WithFields(log.Fields{
+				"repository": repoPath,
+				"invocation": invocation,
+			}).Info("storage core: git ended a reference transaction without reporting Committed or Aborted, its admission is released")
+		}
+	}
+	// The context is cancelled before the release: this order makes the check after
+	// Acquire below see an exit whose release came too early to find the admission.
+	processExited := func() {
+		cancel()
+		releaseUnreported()
+	}
+
+	if !gitcmd.OnInvocationExit(invocation, processExited) {
+		return
+	}
+
+	// A process runs one transaction at a time, so its earlier one has ended. A
+	// process that goes on after a prepare that failed must not queue behind itself.
+	releaseUnreported()
+
+	if v.core.RefAdmission.Acquire(ctx, repoPath, key, localrefs.WriterHook) && ctx.Err() != nil {
+		processExited()
+	}
+}
+
+// admissionKey returns the key of the admission of a transaction: one of its own
+// per process of the repository, from the invocation. A process runs one
+// transaction at a time, and all the phases of a transaction carry its invocation
+// even when they name other references (git reports a symbolic reference by its
+// target in Committed). Without an invocation it is the pending key, which all
+// the transactions with the same hook input share.
+func admissionKey(payload gitcmd.HooksPayload, changes []byte) localrefs.Key {
+	if payload.Changelog.Invocation == "" {
+		return localrefs.Key(pendingKey(payload.Repo, changes))
+	}
+	return localrefs.Key(pendingKey(payload.Repo, []byte("invocation\x00"+payload.Changelog.Invocation)))
 }
 
 // deferDurability lets git write the references of a transaction that the
@@ -950,7 +1011,7 @@ func (v *Voter) Aborted(ctx context.Context, payload gitcmd.HooksPayload, change
 		if repoPath, err := v.repoPath(ctx, payload); err != nil {
 			v.logger.WithError(err).WarnContext(ctx, "storage core: resolving the repository path after an abort, the admission ends at its bound")
 		} else {
-			v.core.RefAdmission.Release(repoPath, localrefs.Key(key))
+			v.core.RefAdmission.Release(repoPath, admissionKey(payload, changes))
 		}
 	}
 

@@ -145,8 +145,11 @@ type ChangelogMeta struct {
 	// runs the hook for and for each such call, so the recording hook can tell the
 	// transactions of one process apart from those of concurrent processes, also
 	// when they have the same updates. Git runs two transactions to delete a
-	// packed reference, and the recording hook pairs them by this value. It is
-	// empty when the changeset log is disabled.
+	// packed reference, and the recording hook pairs them by this value. The owner
+	// of the process declares its end with BeginInvocation, which is how the storage
+	// core learns that git will report nothing more for it. It is empty when neither
+	// the changeset log nor the authoritative storage core needs it, see
+	// InvocationRequired.
 	Invocation string `json:"invocation,omitempty"`
 	// MVCCCommit is the commit handle (see mvcc.CommitHandle) of the MVCC cache of
 	// the request that builds the payload. On a repository that uses the MVCC

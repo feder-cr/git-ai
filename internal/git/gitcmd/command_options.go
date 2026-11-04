@@ -136,6 +136,8 @@ type cmdCfg struct {
 	commandOpts     []command.Option
 	hooksConfigured bool
 	worktreePath    string
+	// invocation is the ChangelogMeta.Invocation of the command, see BeginInvocation.
+	invocation string
 }
 
 // CmdOpt is an option for running a command

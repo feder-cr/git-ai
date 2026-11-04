@@ -155,14 +155,16 @@ func (cc *cmdCfg) configureHooks(
 	)
 
 	// Git runs the reference-transaction hook of this command itself, possibly
-	// for several transactions. The changeset log tells them apart from the
-	// transactions of other processes by a value unique to this command.
-	if requestedHooks&ReferenceTransactionHook != 0 && !cfg.Graft.Changelog.Disabled {
+	// for several transactions. The changeset log and the storage core tell them
+	// apart from the transactions of other processes by a value unique to this
+	// command. newCommand ties the value to the life of the process.
+	if requestedHooks&ReferenceTransactionHook != 0 && InvocationRequired(cfg) {
 		invocation, err := NewChangelogInvocation()
 		if err != nil {
 			return err
 		}
 		hooksPayload.Changelog.Invocation = invocation
+		cc.invocation = invocation
 	}
 
 	payload, err := hooksPayload.Env()

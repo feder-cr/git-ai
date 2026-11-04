@@ -25,14 +25,16 @@ import (
 
 // recordingVoter records the phases the hook manager hands to the storage core.
 type recordingVoter struct {
-	mu     sync.Mutex
-	phases []string
+	mu          sync.Mutex
+	phases      []string
+	invocations []string
 }
 
-func (v *recordingVoter) record(phase string) {
+func (v *recordingVoter) record(phase string, payload gitcmd.HooksPayload) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.phases = append(v.phases, phase)
+	v.invocations = append(v.invocations, payload.Changelog.Invocation)
 }
 
 func (v *recordingVoter) recorded() []string {
@@ -41,27 +43,74 @@ func (v *recordingVoter) recorded() []string {
 	return append([]string(nil), v.phases...)
 }
 
-func (v *recordingVoter) Preparing(context.Context, gitcmd.HooksPayload, []byte) {
-	v.record("preparing")
+func (v *recordingVoter) recordedInvocations() []string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([]string(nil), v.invocations...)
 }
 
-func (v *recordingVoter) Prepared(context.Context, gitcmd.HooksPayload, []byte, changelog.Meta) error {
-	v.record("prepared")
+func (v *recordingVoter) Preparing(_ context.Context, payload gitcmd.HooksPayload, _ []byte) {
+	v.record("preparing", payload)
+}
+
+func (v *recordingVoter) Prepared(_ context.Context, payload gitcmd.HooksPayload, _ []byte, _ changelog.Meta) error {
+	v.record("prepared", payload)
 	return nil
 }
 
-func (v *recordingVoter) Committed(context.Context, gitcmd.HooksPayload, []byte) {
-	v.record("committed")
+func (v *recordingVoter) Committed(_ context.Context, payload gitcmd.HooksPayload, _ []byte) {
+	v.record("committed", payload)
 }
 
-func (v *recordingVoter) Aborted(context.Context, gitcmd.HooksPayload, []byte) {
-	v.record("aborted")
+func (v *recordingVoter) Aborted(_ context.Context, payload gitcmd.HooksPayload, _ []byte) {
+	v.record("aborted", payload)
 }
 
 func (v *recordingVoter) Authoritative() bool { return true }
 
 func (v *recordingVoter) DeferReferenceWrites(context.Context, *gitalypb.Repository) (func(), bool) {
 	return nil, false
+}
+
+// TestReferenceTransactionHook_storageVoterInvocation checks that every phase hands the storage
+// core the invocation of the process, by which it ties the admission to that process.
+func TestReferenceTransactionHook_storageVoterInvocation(t *testing.T) {
+	t.Parallel()
+
+	ctx := testhelper.Context(t)
+	cfg := testcfg.Build(t)
+	repo, _ := gittest.CreateRepository(t, ctx, cfg, gittest.CreateRepositoryConfig{SkipCreationViaService: true})
+
+	payload := gitcmd.NewHooksPayload(ctx, cfg, repo, gittest.DefaultObjectHash, nil, nil, gitcmd.ReferenceTransactionHook, nil)
+	payload.Changelog.Invocation = "the-invocation"
+	env, err := payload.Env()
+	require.NoError(t, err)
+
+	voter := &recordingVoter{}
+	manager := NewManager(
+		cfg,
+		config.NewLocator(cfg),
+		testhelper.SharedLogger(t),
+		gittest.NewCommandFactory(t, cfg),
+		nil,
+		transaction.NewManager(cfg, testhelper.SharedLogger(t), backchannel.NewRegistry()),
+		gitlab.NewMockClient(t, gitlab.MockAllowed, gitlab.MockPreReceive, gitlab.MockPostReceive),
+		NewPostReceiveRegistry(),
+		WithStorageVoter(voter),
+	)
+
+	changes := fmt.Sprintf("%s %s refs/heads/main\n", gittest.DefaultObjectHash.ZeroOID, strings.Repeat("b", gittest.DefaultObjectHash.EncodedLen()))
+	for _, state := range []ReferenceTransactionState{
+		ReferenceTransactionPreparing,
+		ReferenceTransactionPrepared,
+		ReferenceTransactionCommitted,
+		ReferenceTransactionAborted,
+	} {
+		require.NoError(t, manager.ReferenceTransactionHook(ctx, state, []string{env}, strings.NewReader(changes)))
+	}
+
+	require.Equal(t, []string{"preparing", "prepared", "committed", "aborted"}, voter.recorded())
+	require.Equal(t, []string{"the-invocation", "the-invocation", "the-invocation", "the-invocation"}, voter.recordedInvocations())
 }
 
 // TestReferenceTransactionHook_storageVoterPhases checks that the hook manager

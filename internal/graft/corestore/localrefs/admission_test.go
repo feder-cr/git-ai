@@ -67,6 +67,66 @@ func TestAdmissionAdmitsInArrivalOrder(t *testing.T) {
 	require.Equal(t, 0.0, testutil.ToFloat64(a.waiting))
 }
 
+// TestAdmissionReleaseIsIdempotentPerKey verifies that the second release of a key does nothing, and
+// that it reports so: A fails, B is admitted, and A's late release does not free B.
+func TestAdmissionReleaseIsIdempotentPerKey(t *testing.T) {
+	t.Parallel()
+	ctx := testhelper.Context(t)
+	a, waiting := queued(time.Hour, time.Hour)
+
+	require.True(t, a.Acquire(ctx, "repo", key(0), WriterHook))
+	b := acquireAsync(ctx, t, a, waiting, "repo", key(1))
+
+	require.True(t, a.Release("repo", key(0)))
+	require.True(t, <-b)
+
+	require.False(t, a.Release("repo", key(0)), "the release of A is late")
+	require.False(t, a.ReleaseUnreported("repo", key(0)), "the exit of A is late")
+	require.Equal(t, 0.0, testutil.ToFloat64(a.exited), "A released nothing at its exit")
+
+	// B still holds the admission: a third writer queues behind it.
+	c := acquireAsync(ctx, t, a, waiting, "repo", key(2))
+	select {
+	case <-c:
+		t.Fatal("the late release of A freed the admission of B")
+	default:
+	}
+
+	require.True(t, a.Release("repo", key(1)))
+	require.True(t, <-c)
+	require.True(t, a.Release("repo", key(2)))
+	require.False(t, a.Release("repo", key(2)))
+	require.Empty(t, a.queues)
+}
+
+// TestAdmissionReleaseUnreported verifies that the exit of a process hands the admission over,
+// counts only what it released, and does not touch a writer that only has a place in the queue.
+func TestAdmissionReleaseUnreported(t *testing.T) {
+	t.Parallel()
+	ctx := testhelper.Context(t)
+	a, waiting := queued(time.Hour, time.Hour)
+
+	require.True(t, a.Acquire(ctx, "repo", key(0), WriterHook))
+	b := acquireAsync(ctx, t, a, waiting, "repo", key(1))
+
+	require.False(t, a.ReleaseUnreported("repo", key(1)), "B is only queued")
+	require.Equal(t, 0.0, testutil.ToFloat64(a.exited))
+
+	require.True(t, a.ReleaseUnreported("repo", key(0)))
+	require.True(t, <-b)
+	require.Equal(t, 1.0, testutil.ToFloat64(a.exited))
+
+	require.False(t, a.ReleaseUnreported("repo", key(0)))
+	require.Equal(t, 1.0, testutil.ToFloat64(a.exited))
+
+	require.True(t, a.Release("repo", key(1)))
+	require.False(t, a.ReleaseUnreported("repo", key(1)), "B reported its end")
+	require.Equal(t, 1.0, testutil.ToFloat64(a.exited))
+
+	var nilAdmission *Admission
+	require.False(t, nilAdmission.ReleaseUnreported("repo", key(0)))
+}
+
 func TestAdmissionCancelledWriterLeavesTheQueue(t *testing.T) {
 	t.Parallel()
 	ctx := testhelper.Context(t)

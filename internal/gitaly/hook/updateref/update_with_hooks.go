@@ -236,11 +236,15 @@ func (u *UpdaterWithHooks) UpdateReference(
 	// changeset log tells it apart from every other transaction, also from one with the same
 	// updates, by a value unique to this call, as it does for a git process that runs the hook.
 	var invocation string
-	if !u.cfg.Graft.Changelog.Disabled {
+	if gitcmd.InvocationRequired(u.cfg) {
 		if invocation, err = gitcmd.NewChangelogInvocation(); err != nil {
 			return err
 		}
 	}
+	// This call owns the transaction as a git process that runs the hook owns its own. It ends
+	// after every other deferred step of this function, however the function ends, and tells
+	// the storage core that no phase of the transaction comes any more.
+	defer gitcmd.BeginInvocation(invocation)()
 	newHooksPayload := func(repo *gitalypb.Repository) (string, error) {
 		payload := gitcmd.NewHooksPayload(ctx, u.cfg, repo, objectHash, transaction, &receiveHooksPayload, gitcmd.ReceivePackHooks, featureflag.FromContext(ctx))
 		payload.Changelog.Invocation = invocation
