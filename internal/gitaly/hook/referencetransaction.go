@@ -670,8 +670,9 @@ func CheckAgentPolicy(ctx context.Context, graft config.Graft, changes string) e
 // whatever the policy says and in every mode. The layers that refuse it, in the order a write
 // meets them: the request filter of the agent interceptor (a request that names it), git's
 // receive.hideRefs on a push, CheckAgentPolicy in the RPCs that skip the pre-receive hook, and
-// last the reference-transaction hook (graftPolicyDecision), which sees the references git
-// actually updates, the target of a symbolic reference included. See doc/graft/AGENT-SECURITY.md.
+// last the reference-transaction hook (graftPolicyDecision), which is told the references actually
+// updated, by git or by UpdaterWithHooks, the target of a symbolic reference included. See
+// doc/graft/AGENT-SECURITY.md.
 const GraftReservedRefPrefix = "refs/graft/"
 
 // graftReservedDenial returns the denial of changes that update a reference under

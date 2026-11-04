@@ -18,6 +18,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/git/gittest"
 	"github.com/feder-cr/git-ai/internal/git/localrepo"
 	"github.com/feder-cr/git-ai/internal/gitaly/config"
+	"github.com/feder-cr/git-ai/internal/structerr"
 	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
@@ -431,6 +432,191 @@ func TestUserUpdateSubmoduleResolvesBranchesExactly(t *testing.T) {
 		require.Equal(t, branchCommit.String(), parentsOf(t, cfg, repoPath, updated), "the branch, not the tag of its name, is the parent")
 		require.Equal(t, "sub\n", string(gittest.Exec(t, cfg, "-C", repoPath, "ls-tree", "--name-only", updated)), "the tree is the branch's")
 	})
+}
+
+// TestUserMergeToRefResolvesBranchesExactly checks that a first_parent_ref refs/heads/x that does not
+// exist fails as when no decoy is there, and that it is the merge's first parent when it does.
+func TestUserMergeToRefResolvesBranchesExactly(t *testing.T) {
+	t.Parallel()
+
+	ctx, cfg, client := setupExactBranchService(t)
+
+	merge := func(repo *gitalypb.Repository, source git.ObjectID, firstParentRef string) (*gitalypb.UserMergeToRefResponse, error) {
+		return client.UserMergeToRef(ctx, &gitalypb.UserMergeToRefRequest{
+			Repository:     repo,
+			User:           gittest.TestUser,
+			SourceSha:      source.String(),
+			TargetRef:      []byte("refs/merge-requests/1/merge"),
+			FirstParentRef: []byte(firstParentRef),
+			Message:        []byte("merge"),
+		})
+	}
+
+	for _, decoy := range exactBranchDecoys {
+		t.Run(decoy.String(), func(t *testing.T) {
+			t.Parallel()
+
+			repo, repoPath := gittest.CreateRepository(t, ctx, cfg)
+			source := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch(git.DefaultBranch))
+			decoyCommit := writeDecoy(t, cfg, repoPath, decoy)
+
+			_, err := merge(repo, source, "refs/heads/x")
+			testhelper.RequireGrpcError(t, structerr.NewInvalidArgument("Invalid merge source"), err)
+			requireDecoyUntouched(t, cfg, repoPath, decoy, decoyCommit)
+			require.Empty(t, exactReferenceValue(t, cfg, repoPath, "refs/merge-requests/1/merge"))
+		})
+	}
+
+	t.Run("the first parent exists", func(t *testing.T) {
+		t.Parallel()
+
+		repo, repoPath := gittest.CreateRepository(t, ctx, cfg)
+		base := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch(git.DefaultBranch))
+		x := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(base), gittest.WithMessage("x"), gittest.WithBranch("x"))
+		source := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(base), gittest.WithMessage("source"))
+		for _, decoy := range exactBranchDecoys {
+			writeDecoy(t, cfg, repoPath, decoy)
+		}
+
+		response, err := merge(repo, source, "refs/heads/x")
+		require.NoError(t, err)
+		require.Equal(t, x.String()+" "+source.String(), parentsOf(t, cfg, repoPath, response.GetCommitId()))
+	})
+
+	t.Run("a tag does not answer for a branch of the name", func(t *testing.T) {
+		t.Parallel()
+
+		repo, repoPath := gittest.CreateRepository(t, ctx, cfg)
+		base := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch(git.DefaultBranch))
+		x := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(base), gittest.WithMessage("x"), gittest.WithBranch("x"))
+		source := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(base), gittest.WithMessage("source"))
+		writeDecoy(t, cfg, repoPath, "refs/tags/x")
+
+		response, err := client.UserMergeToRef(ctx, &gitalypb.UserMergeToRefRequest{
+			Repository: repo,
+			User:       gittest.TestUser,
+			SourceSha:  source.String(),
+			TargetRef:  []byte("refs/merge-requests/1/merge"),
+			Branch:     []byte("x"),
+			Message:    []byte("merge"),
+		})
+		require.NoError(t, err)
+		require.Equal(t, x.String()+" "+source.String(), parentsOf(t, cfg, repoPath, response.GetCommitId()))
+	})
+}
+
+// TestUserRebaseToRefResolvesBranchesExactly checks that a first_parent_ref refs/heads/x that does
+// not exist fails as when no decoy is there, and that it is what the rebase goes onto when it does.
+func TestUserRebaseToRefResolvesBranchesExactly(t *testing.T) {
+	t.Parallel()
+
+	ctx, cfg, client := setupExactBranchService(t)
+
+	rebase := func(repo *gitalypb.Repository, source git.ObjectID, firstParentRef string) (*gitalypb.UserRebaseToRefResponse, error) {
+		return client.UserRebaseToRef(ctx, &gitalypb.UserRebaseToRefRequest{
+			Repository:     repo,
+			User:           gittest.TestUser,
+			SourceSha:      source.String(),
+			TargetRef:      []byte("refs/merge-requests/1/rebase"),
+			FirstParentRef: []byte(firstParentRef),
+			Timestamp:      timestamppb.Now(),
+		})
+	}
+
+	for _, decoy := range exactBranchDecoys {
+		t.Run(decoy.String(), func(t *testing.T) {
+			t.Parallel()
+
+			repo, repoPath := gittest.CreateRepository(t, ctx, cfg)
+			source := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch(git.DefaultBranch))
+			decoyCommit := writeDecoy(t, cfg, repoPath, decoy)
+
+			_, err := rebase(repo, source, "refs/heads/x")
+			testhelper.RequireGrpcError(t, structerr.NewInvalidArgument("invalid FirstParentRef"), err)
+			requireDecoyUntouched(t, cfg, repoPath, decoy, decoyCommit)
+			require.Empty(t, exactReferenceValue(t, cfg, repoPath, "refs/merge-requests/1/rebase"))
+		})
+	}
+
+	t.Run("the first parent exists", func(t *testing.T) {
+		t.Parallel()
+
+		repo, repoPath := gittest.CreateRepository(t, ctx, cfg)
+		base := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch(git.DefaultBranch))
+		x := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(base), gittest.WithMessage("x"), gittest.WithBranch("x"),
+			gittest.WithTreeEntries(gittest.TreeEntry{Path: "x", Mode: "100644", Content: "x"}))
+		source := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(base), gittest.WithMessage("source"),
+			gittest.WithTreeEntries(gittest.TreeEntry{Path: "source", Mode: "100644", Content: "source"}))
+		for _, decoy := range exactBranchDecoys {
+			writeDecoy(t, cfg, repoPath, decoy)
+		}
+
+		response, err := rebase(repo, source, "refs/heads/x")
+		require.NoError(t, err)
+		require.Equal(t, x.String(), parentsOf(t, cfg, repoPath, response.GetCommitId()))
+	})
+}
+
+// TestUserCreateBranchStartPointResolvesBranchesFirst checks that start_point is read by the rule of
+// resolveStartBranch, against what each form of it names.
+func TestUserCreateBranchStartPointResolvesBranchesFirst(t *testing.T) {
+	t.Parallel()
+
+	ctx, cfg, client := setupExactBranchService(t)
+
+	repo, repoPath := gittest.CreateRepository(t, ctx, cfg)
+	base := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch(git.DefaultBranch), gittest.WithMessage("base"))
+	branch := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(base), gittest.WithMessage("the branch"), gittest.WithBranch("x"))
+	tag := writeDecoy(t, cfg, repoPath, "refs/tags/x")
+	onlyTag := writeDecoy(t, cfg, repoPath, "refs/tags/only-tag")
+	other := writeDecoy(t, cfg, repoPath, "refs/x")
+	missingDecoy := writeDecoy(t, cfg, repoPath, "refs/tags/refs/heads/missing")
+	require.NotEqual(t, tag, branch)
+	require.NotEqual(t, other, branch)
+	annotated := gittest.WriteTag(t, cfg, repoPath, "annotated", branch.Revision(), gittest.WriteTagConfig{Message: "annotated"})
+	require.NotEqual(t, annotated, branch)
+	require.NotEmpty(t, missingDecoy)
+
+	for i, tc := range []struct {
+		startPoint string
+		expected   git.ObjectID
+	}{
+		{startPoint: "x", expected: branch},
+		{startPoint: "x~1", expected: base},
+		{startPoint: "heads/x", expected: branch},
+		{startPoint: "tags/x", expected: tag},
+		{startPoint: "refs/heads/x", expected: branch},
+		{startPoint: "refs/tags/x", expected: tag},
+		{startPoint: "refs/x", expected: other},
+		{startPoint: "only-tag", expected: onlyTag},
+		{startPoint: "annotated", expected: branch},
+		{startPoint: branch.String(), expected: branch},
+		{startPoint: branch.String()[:12], expected: branch},
+		{startPoint: strings.ToUpper(tag.String()), expected: tag},
+		{startPoint: "HEAD", expected: gittest.ResolveRevision(t, cfg, repoPath, "HEAD")},
+		{startPoint: "refs/heads/missing"},
+		{startPoint: "missing"},
+		{startPoint: "x:file"},
+		{startPoint: ":/the branch"},
+	} {
+		t.Run(tc.startPoint, func(t *testing.T) {
+			name := fmt.Sprintf("created-%d", i)
+			response, err := client.UserCreateBranch(ctx, &gitalypb.UserCreateBranchRequest{
+				Repository: repo,
+				User:       gittest.TestUser,
+				BranchName: []byte(name),
+				StartPoint: []byte(tc.startPoint),
+			})
+			if tc.expected == "" {
+				testhelper.RequireGrpcError(t, structerr.NewFailedPrecondition("revspec '%s' not found", tc.startPoint), err)
+				require.Empty(t, exactReferenceValue(t, cfg, repoPath, git.NewReferenceNameFromBranchName(name)))
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.expected.String(), response.GetBranch().GetTargetCommit().GetId())
+			require.Equal(t, tc.expected.String(), exactReferenceValue(t, cfg, repoPath, git.NewReferenceNameFromBranchName(name)))
+		})
+	}
 }
 
 // exactBranchPatch is a patch of the file named file, from "change me" to "changed".

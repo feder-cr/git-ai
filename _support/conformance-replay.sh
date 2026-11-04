@@ -12,7 +12,9 @@
 # A case is CAUGHT when the harness fails on the pre-fix commit, in a test that names the bug; the
 # script prints what failed, and a human checks that it failed for that reason. The gate is at least
 # 2 of the 4 known bugs caught: these three, and the admission that a failed push could keep, which
-# TestConformanceFailedPushReleasesTheAdmission checks on the current tree.
+# TestConformanceFailedPushReleasesTheAdmission checks on the current tree. The commits also predate
+# later fixes, so rows of those fixes fail with them (first_parent_ref, start_point, the writes through
+# a symbolic branch into refs/graft/): the case is caught only by the rows that name its own bug.
 set -uo pipefail
 
 [ $# -ge 1 ] || { echo "usage: $0 WORKDIR [CASE...]"; exit 2; }

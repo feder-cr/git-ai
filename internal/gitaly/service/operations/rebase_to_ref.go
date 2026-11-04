@@ -26,7 +26,9 @@ func (s *Server) UserRebaseToRef(ctx context.Context, request *gitalypb.UserReba
 	}
 	defer cleanup()
 
-	oid, err := quarantineRepo.ResolveRevision(ctx, git.Revision(request.GetFirstParentRef()))
+	// The first parent is read as a start point is: a missing refs/heads/x is missing, whatever
+	// reference git's DWIM rules would take for it.
+	oid, err := resolveStartBranchLocally(ctx, quarantineRepo, string(request.GetFirstParentRef()))
 	if err != nil {
 		return nil, structerr.NewInvalidArgument("invalid FirstParentRef")
 	}

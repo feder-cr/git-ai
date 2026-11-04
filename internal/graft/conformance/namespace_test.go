@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/feder-cr/git-ai/internal/gitaly/config"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
 
@@ -160,17 +161,29 @@ var symbolicAliases = map[string]string{
 	"alias-tag":        "refs/tags/symbolic",
 }
 
-// aliasWrites are the ways an agent writes an existing branch.
-var aliasWrites = []namespaceRPC{
-	namespaceRPCs[0], // UserCommitFiles
-	namespaceRPCs[4], // UserLand
-	namespaceRPCs[5], // UserFFBranch
-	{"push", func(_ context.Context, o operations, name string) error {
-		if o.f.session.push(o.f.client, "source:refs/heads/"+name) != 0 {
-			return errRefused
+// aliasWrites are the ways an agent writes an existing branch: every RPC of the matrix that names a
+// branch, and a push.
+var aliasWrites = append(rpcsNamed(
+	"UserCommitFiles", "UserUpdateBranch", "UserDeleteBranch", "UserLand", "UserFFBranch", "UserMergeBranch",
+	"UserCherryPick", "UserRevert", "UserApplyPatch", "UserUpdateSubmodule",
+), namespaceRPC{"push", func(_ context.Context, o operations, name string) error {
+	if o.f.session.push(o.f.client, "source:refs/heads/"+name) != 0 {
+		return errRefused
+	}
+	return nil
+}})
+
+// rpcsNamed returns the RPCs of the matrix with the given names.
+func rpcsNamed(names ...string) []namespaceRPC {
+	var rpcs []namespaceRPC
+	for _, name := range names {
+		for _, rpc := range namespaceRPCs {
+			if rpc.name == name {
+				rpcs = append(rpcs, rpc)
+			}
 		}
-		return nil
-	}},
+	}
+	return rpcs
 }
 
 // TestConformanceAgentWritesThroughSymbolicBranches checks the layer below the request filter and
@@ -205,9 +218,11 @@ func TestConformanceAgentWritesThroughSymbolicBranches(t *testing.T) {
 						t.Logf("MATRIX %s %s %s -> %s: %v, changed %v\n%s", mode.name, rpc.name, alias, target, err, changed, f.session.log.String())
 
 						want := []string{}
-						if _, moves := symbolicWrites[rpc.name+"/"+alias]; moves {
+						if symbolicWriteMoves(rpc.name, alias) {
 							want = []string{"refs/heads/" + alias, target}
 							sort.Strings(want)
+						} else {
+							require.Equal(t, symbolicRefusal(rpc.name), outcome(err), "%s through %s as an agent", rpc.name, alias)
 						}
 						require.Equal(t, want, changed, "%s through %s as an agent: %v\n%s", rpc.name, alias, err, f.session.log.String())
 					})
@@ -217,25 +232,101 @@ func TestConformanceAgentWritesThroughSymbolicBranches(t *testing.T) {
 	}
 }
 
-// symbolicWrites are the writes that go through a symbolic branch to its target, each with its
-// reason. Everything else leaves the references as they were.
-var symbolicWrites = map[string]string{
-	"UserCommitFiles/alias-keeparound": reasonSymbolicNotReserved,
-	"UserLand/alias-keeparound":        reasonSymbolicNotReserved,
-	"UserFFBranch/alias-keeparound":    reasonSymbolicNotReserved,
-	"push/alias-keeparound":            reasonSymbolicNotReserved,
-	"UserCommitFiles/alias-tag":        reasonSymbolicNotReserved,
-	"UserLand/alias-tag":               reasonSymbolicNotReserved,
-	"UserFFBranch/alias-tag":           reasonSymbolicNotReserved,
-	"push/alias-tag":                   reasonSymbolicNotReserved,
-
-	// Suspected bug: the reservation holds on a push, not on these RPCs.
-	"UserCommitFiles/alias-graft": bugSymbolicReservation,
-	"UserLand/alias-graft":        bugSymbolicReservation,
-	"UserFFBranch/alias-graft":    bugSymbolicReservation,
+// symbolicWriteMoves tells whether a write through a symbolic branch reaches its target. It does when
+// only the target's name could stop it: refs/graft/ is the only reserved namespace, the harness's
+// policy allows refs/**, and an agent cannot make a symbolic branch. A land does not: it updates
+// branches only, and keeps what it knows by branch, so a target that is no branch is refused.
+func symbolicWriteMoves(rpc, alias string) bool {
+	return alias != "alias-graft" && rpc != "UserLand"
 }
 
-const (
-	reasonSymbolicNotReserved = "only refs/graft/ is reserved, and the harness's policy allows refs/**; an agent cannot make a symbolic branch"
-	bugSymbolicReservation    = "the RPC writes through a symbolic branch into refs/graft/, which the reference-transaction hook refuses on a push"
-)
+// symbolicRefusal is how each write through a symbolic branch is refused, as outcome prints it. A push
+// is refused by git, with an exit code. UserUpdateBranch answers FailedPrecondition to every failure
+// that is no custom hook's, whatever the cause.
+func symbolicRefusal(rpc string) string {
+	switch rpc {
+	case "UserLand", "UserUpdateBranch":
+		return "FailedPrecondition"
+	case "push":
+		return errRefused.Error()
+	default:
+		return "PermissionDenied"
+	}
+}
+
+// TestConformanceAgentCreatesThroughDanglingSymbolicBranches checks the writes that create: a symbolic
+// branch whose target does not exist is a branch that does not exist either, and a create through it
+// writes the target.
+func TestConformanceAgentCreatesThroughDanglingSymbolicBranches(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range matrixModes() {
+		if mode.coreMode != "" {
+			continue
+		}
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := newGitaiBackend(t, mode, agentGraft(everyOperationRPC...))
+			client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+			for _, rpc := range append(rpcsNamed("UserCommitFiles", "UserCreateBranch", "UserLand"), aliasWrites[len(aliasWrites)-1]) {
+				t.Run(rpc.name, func(t *testing.T) {
+					t.Parallel()
+
+					f := newFixture(t, backend.newRemote(t))
+					f.session.local(f.path, "symbolic-ref", "refs/heads/alias", "refs/graft/absent")
+
+					before := f.refs()
+					err := rpc.call(backend.ctx, operations{client, f}, "alias")
+					require.Error(t, err)
+					require.Empty(t, changedRefs(before, f.refs()), "%s through a dangling symbolic branch: %v\n%s", rpc.name, err, f.session.log.String())
+				})
+			}
+		})
+	}
+}
+
+// TestConformancePolicyJudgesTheTargetOfSymbolicBranches gives the agent a branch it may write that
+// is a symbolic reference to one it may not. The policy judges the branch that would be written,
+// whichever way the write comes, a land in a lane included.
+func TestConformancePolicyJudgesTheTargetOfSymbolicBranches(t *testing.T) {
+	t.Parallel()
+
+	for _, batching := range []bool{false, true} {
+		t.Run(fmt.Sprintf("batching=%v", batching), func(t *testing.T) {
+			t.Parallel()
+
+			graft := agentGraft(everyOperationRPC...)
+			graft.Policy = append([]config.GraftPolicyRule{
+				{Refs: []string{"refs/heads/protected"}, Allow: false},
+			}, graft.Policy...)
+			graft.Land.Batch.Disabled = !batching
+			backend := newGitaiBackend(t, gitaiMode{name: "off-standalone", standalone: true}, graft)
+			client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+			for _, rpc := range aliasWrites {
+				t.Run(rpc.name, func(t *testing.T) {
+					t.Parallel()
+
+					f := newFixture(t, backend.newRemote(t))
+					f.session.local(f.path, "update-ref", "refs/heads/protected", f.main)
+					f.session.local(f.path, "symbolic-ref", "refs/heads/alias", "refs/heads/protected")
+
+					before := f.refs()
+					err := rpc.call(backend.ctx, operations{client, f}, "alias")
+					require.Error(t, err)
+					require.Empty(t, changedRefs(before, f.refs()), "%s through a symbolic branch: %v\n%s", rpc.name, err, f.session.log.String())
+
+					// The same write is allowed once the branch points elsewhere: what was refused
+					// was the target.
+					f.session.local(f.path, "update-ref", "refs/heads/allowed", f.main)
+					f.session.local(f.path, "symbolic-ref", "refs/heads/alias", "refs/heads/allowed")
+					require.NoError(t, rpc.call(backend.ctx, operations{client, f}, "alias"), f.session.log.String())
+					require.NotEqual(t, f.main, f.refs()["refs/heads/allowed"])
+					require.Equal(t, f.main, f.refs()["refs/heads/protected"])
+				})
+			}
+		})
+	}
+}

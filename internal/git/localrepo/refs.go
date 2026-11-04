@@ -203,6 +203,37 @@ func (repo *Repo) ResolveReferenceExactly(ctx context.Context, reference git.Ref
 	return git.ObjectID(value), nil
 }
 
+// WrittenReference returns the reference that an update of reference writes: for a symbolic
+// reference the end of its chain of targets, whether or not that exists, and otherwise reference
+// itself, also when it does not exist. The name is read exactly, with no DWIM rule.
+//
+// A name git cannot read as a symbolic reference, because it is not a valid name or because its
+// chain is a cycle or too long, is returned as it is: no update can write it, and git-update-ref(1)
+// says why.
+func (repo *Repo) WrittenReference(ctx context.Context, reference git.ReferenceName) (git.ReferenceName, error) {
+	var stdout, stderr bytes.Buffer
+	err := repo.ExecAndWait(ctx, gitcmd.Command{
+		Name:  "symbolic-ref",
+		Flags: []gitcmd.Option{gitcmd.Flag{Name: "--quiet"}},
+		Args:  []string{reference.String()},
+	},
+		// symbolic-ref is a reference-updating command for git, but this call only reads.
+		gitcmd.WithDisabledHooks(),
+		gitcmd.WithStdout(&stdout),
+		gitcmd.WithStderr(&stderr),
+	)
+	if err == nil {
+		return git.ReferenceName(strings.TrimSuffix(stdout.String(), "\n")), nil
+	}
+
+	// With --quiet it exits 1 for a reference that is not symbolic or does not exist, and 128 with
+	// "No such ref" for one it cannot read as a reference.
+	if code, ok := command.ExitStatus(err); ok && (code == 1 || (code == 128 && strings.Contains(stderr.String(), "No such ref"))) {
+		return reference, nil
+	}
+	return "", fmt.Errorf("symbolic-ref %q: %w, stderr: %q", reference, err, stderr.String())
+}
+
 // ReflogExists reports whether the reference named reference has a reflog, with `git reflog
 // exists`, which reads that one reference's log: no DWIM rule.
 func (repo *Repo) ReflogExists(ctx context.Context, reference git.ReferenceName) (bool, error) {

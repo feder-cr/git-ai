@@ -231,6 +231,61 @@ func TestRepo_ResolveReferenceExactly(t *testing.T) {
 	}
 }
 
+// TestRepo_WrittenReference checks which reference an update of a name writes, by asking git: the
+// answer is compared with what `git update-ref` then moves, so that the two cannot disagree.
+func TestRepo_WrittenReference(t *testing.T) {
+	t.Parallel()
+
+	ctx := testhelper.Context(t)
+	cfg, repo, repoPath := setupRepo(t, withDisabledHooks())
+
+	commit := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch("main"))
+	next := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(commit))
+	gittest.WriteRef(t, cfg, repoPath, "refs/heads/target", commit)
+	gittest.WriteRef(t, cfg, repoPath, "refs/heads/refs/heads/missing", commit)
+	gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/one", "refs/heads/target")
+	gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/chain", "refs/heads/one")
+	gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/dangling", "refs/graft/absent")
+
+	for _, tc := range []struct {
+		reference git.ReferenceName
+		expected  git.ReferenceName
+	}{
+		{reference: "refs/heads/main", expected: "refs/heads/main"},
+		{reference: "refs/heads/one", expected: "refs/heads/target"},
+		{reference: "refs/heads/chain", expected: "refs/heads/target"},
+		{reference: "refs/heads/dangling", expected: "refs/graft/absent"},
+		// A missing name is that name, not one of git's DWIM rules.
+		{reference: "refs/heads/missing", expected: "refs/heads/missing"},
+		// Not a name git can write: it is returned for the update to refuse.
+		{reference: "refs/heads/not..valid", expected: "refs/heads/not..valid"},
+	} {
+		t.Run(tc.reference.String(), func(t *testing.T) {
+			written, err := repo.WrittenReference(ctx, tc.reference)
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, written)
+		})
+	}
+
+	t.Run("what git update-ref moves", func(t *testing.T) {
+		written, err := repo.WrittenReference(ctx, "refs/heads/chain")
+		require.NoError(t, err)
+
+		gittest.Exec(t, cfg, "-C", repoPath, "update-ref", "refs/heads/chain", next.String(), commit.String())
+		require.Equal(t, next.String(), text.ChompBytes(gittest.Exec(t, cfg, "-C", repoPath, "rev-parse", "--verify", written.String())))
+		gittest.Exec(t, cfg, "-C", repoPath, "update-ref", "refs/heads/chain", commit.String(), next.String())
+	})
+
+	t.Run("a cycle", func(t *testing.T) {
+		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/cycle-a", "refs/heads/cycle-b")
+		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/cycle-b", "refs/heads/cycle-a")
+
+		written, err := repo.WrittenReference(ctx, "refs/heads/cycle-a")
+		require.NoError(t, err)
+		require.Equal(t, git.ReferenceName("refs/heads/cycle-a"), written)
+	})
+}
+
 // TestRepo_GetDefaultBranchReadsCandidatesExactly checks that the candidates of the default branch
 // (HEAD's branch, main, master) are read by their exact names: a missing refs/heads/main is not the
 // default branch because git's DWIM rules would resolve it through a decoy, and the default branch

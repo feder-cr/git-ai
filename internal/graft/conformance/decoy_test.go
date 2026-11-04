@@ -174,19 +174,4 @@ func TestConformanceDecoys(t *testing.T) {
 
 // knownDecoyAnswers are the decoys that still answer for a branch: suspected bugs, listed so that the
 // harness stays usable while they are open. An entry fails as soon as the decoy stops answering.
-var knownDecoyAnswers = map[string]string{
-	"UserMergeToRef/first_parent_ref refs/refs/heads/x":          bugFirstParentRefDWIM,
-	"UserMergeToRef/first_parent_ref refs/tags/refs/heads/x":     bugFirstParentRefDWIM,
-	"UserMergeToRef/first_parent_ref refs/heads/refs/heads/x":    bugFirstParentRefDWIM,
-	"UserMergeToRef/first_parent_ref refs/remotes/refs/heads/x":  bugFirstParentRefDWIM,
-	"UserRebaseToRef/first_parent_ref refs/refs/heads/x":         bugFirstParentRefDWIM,
-	"UserRebaseToRef/first_parent_ref refs/tags/refs/heads/x":    bugFirstParentRefDWIM,
-	"UserRebaseToRef/first_parent_ref refs/heads/refs/heads/x":   bugFirstParentRefDWIM,
-	"UserRebaseToRef/first_parent_ref refs/remotes/refs/heads/x": bugFirstParentRefDWIM,
-	"UserCreateBranch/start_point refs/tags/x":                   bugStartPointTag,
-}
-
-const (
-	bugFirstParentRefDWIM = "first_parent_ref goes through git's DWIM rules: a missing refs/heads/x resolves to the decoy, and the merge or rebase is built on the decoy's commit instead of failing"
-	bugStartPointTag      = "start_point x resolves to a tag x before a branch x, unlike the start points of UserCherryPick, UserRevert and UserRebase, where an existing branch beats a tag"
-)
+var knownDecoyAnswers = map[string]string{}

@@ -67,6 +67,10 @@ func (s *Server) UserLand(ctx context.Context, in *gitalypb.UserLandRequest) (*g
 		return nil, structerr.NewInvalidArgument("%w", err)
 	}
 
+	if err := s.landOnWrittenBranch(ctx, in); err != nil {
+		return nil, err
+	}
+
 	committer, err := git.SignatureFromRequest(in)
 	if err != nil {
 		return nil, structerr.NewInvalidArgument("%w", err)
@@ -87,6 +91,32 @@ func (s *Server) UserLand(ctx context.Context, in *gitalypb.UserLandRequest) (*g
 		return s.landResolving(ctx, in, committer)
 	}
 	return s.landOnce(ctx, in, committer, precheck, nil)
+}
+
+// landOnWrittenBranch makes a request for a symbolic branch a request for the branch it writes,
+// before anything of the land depends on the name: the lane that orders the land's compare-and-swap,
+// the policy that admits it, the identities and proposals kept per branch, and the tickets.
+//
+// A land only ever updates a branch, and those are all kept by branch, so a symbolic branch whose
+// target is no branch is refused, without saying what the target is: it may be hidden from the
+// caller.
+func (s *Server) landOnWrittenBranch(ctx context.Context, in *gitalypb.UserLandRequest) error {
+	requested := git.NewReferenceNameFromBranchName(string(in.GetBranch()))
+	written, err := s.localRepoFactory.Build(in.GetRepository()).WrittenReference(ctx, requested)
+	if err != nil {
+		return structerr.NewInternal("reading the branch to write: %w", err)
+	}
+	if written == requested {
+		return nil
+	}
+
+	branch, isBranch := strings.CutPrefix(written.String(), "refs/heads/")
+	if !isBranch {
+		return structerr.NewFailedPrecondition("branch %q is a symbolic reference to something that is not a branch", string(in.GetBranch()))
+	}
+	in.Branch = []byte(branch)
+
+	return nil
 }
 
 // landOnce lands the request once through its lane, in a batch or alone, with the precheck of an

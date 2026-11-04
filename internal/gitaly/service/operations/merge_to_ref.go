@@ -36,7 +36,9 @@ func (s *Server) UserMergeToRef(ctx context.Context, request *gitalypb.UserMerge
 		revision = git.Revision(request.GetFirstParentRef())
 	}
 
-	oid, err := repo.ResolveRevision(ctx, revision)
+	// The first parent is read as a start point is: a missing refs/heads/x is missing, whatever
+	// reference git's DWIM rules would take for it.
+	oid, err := resolveStartBranchLocally(ctx, repo, revision.String())
 	if err != nil {
 		return nil, structerr.NewInvalidArgument("Invalid merge source")
 	}
