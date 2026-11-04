@@ -341,7 +341,9 @@ the database references reach is there. A failure of
 either check is reported as a connectivity error; a bucket problem starts with
 `storage core objects:`. In authoritative mode it catches the local copy up
 first, so a divergence means a real inconsistency. In shadow mode it compares
-git with what the database recorded.
+git with what the database recorded. A catch-up that fails because the database
+holds references git cannot hold together is reported as that, with the way out
+(see [Failures](#failures)).
 
 If the bucket check fails (objects of a git write that the storage core did not
 record, left out of the packs of the writes on top of it by a version before
@@ -620,6 +622,31 @@ or re-import the repository from scratch (see
 - **A repository removed on another node.** The local copy has a watermark
   whose key the database no longer has; it is moved into the storage's
   temporary directory, and the repository is reported missing on that node too.
+- **A database that already holds such a pair.** Only a version before this
+  refusal can have written one. Every catch-up and hydration of the repository
+  fails with `Internal` on every node (`cannot process 'refs/heads/a' and
+  'refs/heads/a/b' at the same time`, or `conflicting reference updates in the
+  same transaction` on a hydration), so the repository serves nothing until one
+  side is gone. `graft storage verify` names the pairs and their values. Nothing
+  repairs this by itself, because either side may be the one that matters:
+
+  1. Choose the reference to delete, and note its value, which `verify` prints.
+  2. Run `graft storage delete-conflicting-ref REFERENCE EXPECTED_TARGET`. It
+     refuses a reference that is not part of a pair or has another value, and
+     records an ordinary changeset that the nodes apply when they catch up. Both
+     checks run in the transaction of that changeset: once one side of a pair
+     is gone, a request for the other side is refused, so two operators who
+     delete the two sides at once delete only one. It also fails while the
+     reference is the root of an open review.
+  3. Create the deleted reference again under another name at the value you
+     noted, if you still want it. Do this before the next checkpoint: the pack
+     that holds its objects stays until a checkpoint that does not reach them
+     covers it and garbage collection runs at least `gc_grace` after that
+     checkpoint.
+
+  It needs authoritative mode. In shadow mode no node catches up from the
+  database and git's copy is what the database must learn, so repair a shadow
+  database as the bucket check above says, by importing again.
 
 - **Local reference writes and unclean shutdowns (authoritative mode).** In
   authoritative mode the database commit is the durable point of a reference

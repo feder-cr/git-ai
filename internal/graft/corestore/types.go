@@ -260,6 +260,11 @@ func (e *ErrRefNameConflict) Error() string {
 	return fmt.Sprintf("storage core: reference %q conflicts with reference %q: one name is a directory of the other", e.Name, e.Existing)
 }
 
+// ErrRefNotConflicting is returned by MetaStore.CommitChangeset for a changeset
+// with ChangesetInput.OnlyConflictingNames when a reference it updates is absent
+// or is not part of a pair that git cannot hold together.
+var ErrRefNotConflicting = errors.New("storage core: the reference is not part of a pair of conflicting references")
+
 // RefNameConflict is a pair of references that git cannot hold together.
 type RefNameConflict struct {
 	// Parent is the name that is a directory of Child.

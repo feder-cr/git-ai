@@ -13,6 +13,12 @@ import (
 type ChangesetInput struct {
 	// RepoID is the repository. RegisterRepository ignores it.
 	RepoID int64
+	// OnlyConflictingNames refuses the changeset with ErrRefNotConflicting,
+	// writing nothing, unless every reference it updates exists and is one side
+	// of a pair that git cannot hold together (RefNameConflicts). It is checked
+	// in the transaction of the commit, under the lock of the repository. Only
+	// the operator's repair of such a pair sets it.
+	OnlyConflictingNames bool
 	// Updates are the reference changes, in order. A name appears at most once.
 	Updates []RefUpdate
 	// Operation, Actor and NodeID describe who made the changeset.

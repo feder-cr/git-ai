@@ -128,6 +128,12 @@ func (s *Store) commitChangeset(ctx context.Context, tx *sql.Tx, repo *repoState
 		return corestore.CommitResult{}, err
 	}
 
+	if in.OnlyConflictingNames {
+		if err := s.refuseRepairOfApplicableRefs(ctx, tx, repo.id, names, current); err != nil {
+			return corestore.CommitResult{}, err
+		}
+	}
+
 	var (
 		conflicts []corestore.RefConflict
 		effective []corestore.AppliedUpdate
@@ -287,17 +293,71 @@ func (s *Store) refuseRefNameConflicts(ctx context.Context, tx *sql.Tx, repoID i
 			}
 		}
 
-		var child []byte
-		lower, upper := refChildrenRange(name)
-		err := tx.QueryRowContext(ctx, s.bind(firstRefInRangeQuery), repoID, lower, upper).Scan(&child)
-		switch {
-		case err == nil:
-			return &corestore.ErrRefNameConflict{Name: name, Existing: string(child)}
-		case !errors.Is(err, sql.ErrNoRows):
-			return fmt.Errorf("read the references below %q: %w", name, err)
+		child, found, err := s.firstRefBelow(ctx, tx, repoID, name)
+		if err != nil {
+			return err
+		}
+		if found {
+			return &corestore.ErrRefNameConflict{Name: name, Existing: child}
 		}
 	}
 
+	return nil
+}
+
+// firstRefBelow returns the first reference of the repository below the
+// directory name, and whether there is one.
+func (s *Store) firstRefBelow(ctx context.Context, q querier, repoID int64, name string) (string, bool, error) {
+	var child []byte
+	lower, upper := refChildrenRange(name)
+	err := q.QueryRowContext(ctx, s.bind(firstRefInRangeQuery), repoID, lower, upper).Scan(&child)
+	switch {
+	case err == nil:
+		return string(child), true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("read the references below %q: %w", name, err)
+	}
+}
+
+// conflictingRef returns a reference of the repository, as q reads it, that git
+// cannot hold next to the reference name: a parent directory of name that is a
+// reference, else the first reference below name. The reference name itself
+// does not count. It costs one primary key lookup of the parent names and one
+// primary key range probe.
+func (s *Store) conflictingRef(ctx context.Context, q querier, repoID int64, name string) (string, bool, error) {
+	parents := corestore.ParentRefNames(name)
+	existing, err := s.currentTargets(ctx, q, repoID, parents)
+	if err != nil {
+		return "", false, err
+	}
+	for _, parent := range parents {
+		if _, ok := existing[parent]; ok {
+			return parent, true, nil
+		}
+	}
+	return s.firstRefBelow(ctx, q, repoID, name)
+}
+
+// refuseRepairOfApplicableRefs returns corestore.ErrRefNotConflicting unless
+// every reference of names exists in current and conflicts by name with another
+// reference of the repository (ChangesetInput.OnlyConflictingNames). It reads
+// in tx, under the lock of the repository, so the check holds for the commit it
+// guards: once one side of a pair is deleted, the other is no longer accepted.
+func (s *Store) refuseRepairOfApplicableRefs(ctx context.Context, tx *sql.Tx, repoID int64, names []string, current map[string]corestore.Target) error {
+	for _, name := range names {
+		if current[name].Absent() {
+			return fmt.Errorf("reference %q does not exist: %w", name, corestore.ErrRefNotConflicting)
+		}
+		_, found, err := s.conflictingRef(ctx, tx, repoID, name)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("reference %q: %w", name, corestore.ErrRefNotConflicting)
+		}
+	}
 	return nil
 }
 

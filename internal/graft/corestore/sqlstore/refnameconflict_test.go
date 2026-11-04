@@ -426,3 +426,91 @@ func TestRefNameConflicts(t *testing.T) {
 		}),
 	)
 }
+
+// TestCommitChangesetOnlyConflictingNames covers the check of the operator's
+// repair, which runs in the transaction of its commit: it deletes one side of a
+// pair and nothing else, also when the other side went away a moment before.
+func TestCommitChangesetOnlyConflictingNames(t *testing.T) {
+	repair := func(ctx context.Context, s *sqlstore.Store, repoID int64, name string, old corestore.Target) error {
+		_, err := s.CommitChangeset(ctx, corestore.ChangesetInput{
+			RepoID: repoID, Updates: []corestore.RefUpdate{update(name, old, "")},
+			OnlyConflictingNames: true, Operation: "test", Actor: "tester", NodeID: "node-a",
+		})
+		return err
+	}
+
+	forEachDialect(t, func(t *testing.T, ctx context.Context, s *sqlstore.Store) {
+		repo := register(t, ctx, s, testKey("r"))
+		_, err := commit(ctx, s, repo.ID, create("refs/heads/a", oid(1)), create("refs/heads/plain", oid(1)))
+		require.NoError(t, err)
+		coretest.CommitRefWithoutNameCheck(t, ctx, s, repo.ID, "refs/heads/a/b", oid(1))
+
+		require.ErrorIs(t, repair(ctx, s, repo.ID, "refs/heads/plain", oid(1)), corestore.ErrRefNotConflicting)
+		require.ErrorIs(t, repair(ctx, s, repo.ID, "refs/heads/absent", oid(1)), corestore.ErrRefNotConflicting)
+		require.ErrorIs(t, repair(ctx, s, repo.ID, "refs/heads/a/b/c", oid(1)), corestore.ErrRefNotConflicting)
+
+		var conflict *corestore.ErrRefConflict
+		require.True(t, errors.As(repair(ctx, s, repo.ID, "refs/heads/a", oid(2)), &conflict), "the value is checked too")
+
+		// One side goes, and the other is no longer anything to repair.
+		require.NoError(t, repair(ctx, s, repo.ID, "refs/heads/a/b", oid(1)))
+		require.ErrorIs(t, repair(ctx, s, repo.ID, "refs/heads/a", oid(1)), corestore.ErrRefNotConflicting)
+
+		requireRefs(t, ctx, s, repo.ID, map[string]corestore.Target{"refs/heads/a": oid(1), "refs/heads/plain": oid(1)})
+	})
+}
+
+// TestCommitChangesetOnlyConflictingNamesRace has two operators delete the two
+// sides of a pair at once, through two stores: exactly one deletion goes
+// through, in every round, so one side always stays.
+func TestCommitChangesetOnlyConflictingNamesRace(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, ctx context.Context, s *sqlstore.Store) {
+		other := openStore(t, ctx, coreDSN(t, s))
+		repo := register(t, ctx, s, testKey("r"))
+
+		for round := 0; round < 20; round++ {
+			parent := fmt.Sprintf("refs/heads/r%d", round)
+			child := parent + "/x"
+			_, err := commit(ctx, s, repo.ID, create(parent, oid(1)))
+			require.NoError(t, err)
+			coretest.CommitRefWithoutNameCheck(t, ctx, s, repo.ID, child, oid(1))
+
+			var (
+				wg    sync.WaitGroup
+				start = make(chan struct{})
+				errs  [2]error
+			)
+			for i, side := range []struct {
+				store *sqlstore.Store
+				name  string
+			}{{s, parent}, {other, child}} {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					_, errs[i] = side.store.CommitChangeset(ctx, corestore.ChangesetInput{
+						RepoID: repo.ID, Updates: []corestore.RefUpdate{update(side.name, oid(1), "")},
+						OnlyConflictingNames: true, Operation: "test", Actor: "tester", NodeID: "node-a",
+					})
+				}()
+			}
+			close(start)
+			wg.Wait()
+
+			refused := 0
+			for _, err := range errs {
+				if err != nil {
+					require.ErrorIs(t, err, corestore.ErrRefNotConflicting)
+					refused++
+				}
+			}
+			require.Equal(t, 1, refused, "round %d: %v", round, errs)
+
+			refs, _, err := s.Refs(ctx, repo.ID)
+			require.NoError(t, err)
+			_, hasParent := refs[parent]
+			_, hasChild := refs[child]
+			require.True(t, hasParent != hasChild, "round %d: one side stays", round)
+		}
+	})
+}
