@@ -7,8 +7,9 @@
 // The hook manager (internal/gitaly/hook) calls Preparing, Prepared, Committed
 // and Aborted for every reference transaction. Preparing runs before git takes
 // the reference locks: it builds and uploads the pack of the transaction, so
-// that only the expectations (one for-each-ref) and the database commit run
-// while git holds the repository-wide reftable lock. Preparing never fails the
+// that only the expectations (one for-each-ref, only when an update has a zero
+// old value) and the database commit run while git holds the repository-wide
+// reftable lock. Preparing never fails the
 // transaction: when it did not prepare the pack, Prepared builds and uploads it
 // itself. Authoritative mode serves reftable repositories only (REFTABLE
 // RULE); shadow mode also processes files-backend repositories and skips MVCC
@@ -103,6 +104,10 @@ type Voter struct {
 	// beforeAcquire is called right before a transaction with an invocation takes
 	// its admission; tests set it to end the process at that point.
 	beforeAcquire func()
+	// readLocalRefs reads the local references of the updates with a zero old
+	// value in the Prepared phase (expectations): gitops.ReadRefValues, which tests
+	// wrap to see whether and what it reads.
+	readLocalRefs func(ctx context.Context, repo *localrepo.Repo, names []string) (map[string]corestore.Target, error)
 }
 
 // committedEntry is a transaction committed to the database in Prepared.
@@ -139,15 +144,16 @@ func (p preparedPack) usable(now time.Time) bool {
 // be nil in shadow mode).
 func New(core *corestore.Core, logger log.Logger, repoFactory localrepo.Factory, locator storage.Locator, applier corestore.LocalApplier) *Voter {
 	return &Voter{
-		core:        core,
-		logger:      logger,
-		repoFactory: repoFactory,
-		locator:     locator,
-		applier:     applier,
-		crashAt:     os.Getenv(CrashEnv),
-		pending:     newPendingSet[committedEntry](),
-		packs:       newPendingSet[preparedPack](),
-		metrics:     newMetrics(),
+		core:          core,
+		logger:        logger,
+		repoFactory:   repoFactory,
+		locator:       locator,
+		applier:       applier,
+		crashAt:       os.Getenv(CrashEnv),
+		pending:       newPendingSet[committedEntry](),
+		packs:         newPendingSet[preparedPack](),
+		metrics:       newMetrics(),
+		readLocalRefs: gitops.ReadRefValues,
 	}
 }
 
@@ -654,9 +660,13 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 }
 
 // expectations returns the compare-and-swap condition of every update, as in
-// the table of doc/graft/PLAN6.md (RULE 5). The local references are read in
-// one git process: git holds their locks in the Prepared phase, so they still
-// show the old values.
+// the table of doc/graft/PLAN6.md (RULE 5). An update that names its old value
+// expects that value in the database, whatever the local reference holds. Only
+// a zero old value needs the local reference, to tell "must not exist" from a
+// forced update: the local references of those updates alone are read, in one
+// git process (git holds their locks in the Prepared phase, so they still show
+// the old values), and none at all when no update has a zero old value, so that
+// a land runs no git process under the lock.
 //
 // oldValueAlwaysSent tells that the writer always gives git an old value:
 // receive-pack and UpdaterWithHooks, the only writers that request the pre-receive
@@ -667,14 +677,19 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 // the whole transaction is refused, because the voter does not know the other
 // rejected updates of the input.
 func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, updates []inputUpdate, oldValueAlwaysSent bool) ([]corestore.RefUpdate, error) {
-	names := make([]string, len(updates))
-	for i, u := range updates {
-		names[i] = u.name
+	var names []string
+	for _, u := range updates {
+		if u.oldZero {
+			names = append(names, u.name)
+		}
 	}
 
-	local, err := gitops.ReadRefValues(ctx, repo, names)
-	if err != nil {
-		return nil, v.unavailable(err)
+	local := map[string]corestore.Target{}
+	if len(names) > 0 {
+		var err error
+		if local, err = v.readLocalRefs(ctx, repo, names); err != nil {
+			return nil, v.unavailable(err)
+		}
 	}
 
 	// ReadRefValues leaves out broken references, among them a symbolic

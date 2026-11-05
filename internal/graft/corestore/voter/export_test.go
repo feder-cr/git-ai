@@ -1,14 +1,27 @@
 package voter
 
 import (
+	"context"
 	"time"
 
+	"github.com/feder-cr/git-ai/internal/git/localrepo"
+	"github.com/feder-cr/git-ai/internal/graft/corestore"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
 
 // SetBeforeAcquire sets the function called right before a transaction with an invocation takes its
 // admission.
 func SetBeforeAcquire(v *Voter, f func()) { v.beforeAcquire = f }
+
+// ObserveLocalReads makes the voter call observe with the names of each read of the local
+// references in the Prepared phase, before the read.
+func ObserveLocalReads(v *Voter, observe func(names []string)) {
+	read := v.readLocalRefs
+	v.readLocalRefs = func(ctx context.Context, repo *localrepo.Repo, names []string) (map[string]corestore.Target, error) {
+		observe(names)
+		return read(ctx, repo, names)
+	}
+}
 
 // The pending set is exported to the external tests of the package.
 

@@ -65,7 +65,9 @@ maintenance). Where they differ, PLAN7.md is the later decision.
   every local reference value went through the database, and the objects that
   no value recorded in the database reaches in shadow mode, where some writes
   are not recorded. In the Prepared phase, while git holds the
-  reference locks, it only reads the expected old values (one `for-each-ref`)
+  reference locks, it reads the local references of the updates with a zero old
+  value only (one `for-each-ref`, none for a transaction whose updates all name
+  their old value, such as a land: the database checks a named old value alone)
   and commits the changeset with a per-reference compare-and-swap against
   `graft_refs`, in one database transaction. The Preparing phase never fails a
   write: when it did not prepare the pack (it failed, or the transaction did not

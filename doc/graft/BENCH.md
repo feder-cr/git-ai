@@ -30,6 +30,29 @@ lands per minute and p99 1.5-1.8 s. The two sets differ in both columns, so
 part of the difference is the machine and its load, not only the code; the
 cause was not investigated, and only the later set is current.
 
+### No local reference read under the lock for updates that name their old value (2026-11-05)
+
+The Prepared phase reads the local references (`for-each-ref`) only for the updates with a zero
+old value, and not at all when every update names its old value. Same harness and workload as the
+section below: arm A `bf4b7a5`, arm B the change, six series per arm, A B A B ..., all valid. Gate
+declared before the run: Prepared-phase mean at least 30% lower, or admission wait at least 20 ms
+lower. Not met:
+
+| series | A prepared mean (ms) | B prepared mean (ms) | A admission wait (ms) | B admission wait (ms) | A p99 (ms) | B p99 (ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 15.4 | 15.0 | 91.0 | 100.4 | 2720 | 3226 |
+| 2 | 14.1 | 13.2 | 85.2 | 94.1 | 2216 | 2115 |
+| 3 | 13.6 | 14.4 | 83.6 | 89.6 | 2197 | 2339 |
+| 4 | 13.8 | 14.5 | 84.4 | 87.0 | 2133 | 2718 |
+| 5 | 13.4 | 13.0 | 82.4 | 91.2 | 2069 | 2279 |
+| 6 | 14.7 | 14.6 | 87.3 | 93.8 | 2624 | 2286 |
+
+Means: Prepared 14.2 and 14.1 ms, admission wait 85.7 and 92.7 ms. The workload is mostly creates:
+of about 1,100 transactions per series, 1,001 create a branch (each agent change) and about 100 are
+land updates, so the read is skipped for one transaction in eleven. A create still needs the read:
+it is the stale-create refusal, which the database alone cannot make when the local reference is
+ahead of the database.
+
 ### Default bundled git 2.56.0 (2026-11-05)
 
 The default bundled git (`GIT_VERSION_PREV`, the `-prev` build that serves every non-MVCC
