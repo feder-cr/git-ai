@@ -39,7 +39,7 @@ func TestParseInput_referenceNameLength(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := parseInput(tc.changes, hash)
+			_, err := parseInput(tc.changes, hash, false)
 			if tc.refused {
 				require.ErrorContains(t, err, "over the limit of 1024 bytes")
 				return
@@ -47,4 +47,22 @@ func TestParseInput_referenceNameLength(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestParseInput_objectPoolAllowance(t *testing.T) {
+	t.Parallel()
+
+	hash := git.ObjectHashSHA1
+	line := func(prefix string, length int) []byte {
+		return []byte(fmt.Sprintf("%s %s %s%s\n", hash.ZeroOID, strings.Repeat("1", hash.EncodedLen()), prefix, strings.Repeat("x", length-len(prefix))))
+	}
+
+	_, err := parseInput(line("refs/remotes/origin/", 1039), hash, true)
+	require.NoError(t, err)
+	_, err = parseInput(line("refs/remotes/origin/", 1040), hash, true)
+	require.ErrorContains(t, err, "over the limit of 1039 bytes")
+	_, err = parseInput(line("refs/remotes/origin/", 1025), hash, false)
+	require.ErrorContains(t, err, "over the limit of 1024 bytes")
+	_, err = parseInput(line("refs/heads/", 1025), hash, true)
+	require.ErrorContains(t, err, "over the limit of 1024 bytes")
 }

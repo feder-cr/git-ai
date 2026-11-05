@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/feder-cr/git-ai/internal/git"
+	"github.com/feder-cr/git-ai/internal/structerr"
 )
 
 // GetReferencesConfig is configuration that can be passed to GetReferences in order to change its default behaviour.
@@ -81,4 +82,18 @@ func GetSymbolicRef(ctx context.Context, repoExecutor RepositoryExecutor, refnam
 	}
 
 	return git.NewSymbolicReference(refname, git.ReferenceName(symref)), nil
+}
+
+// ReferenceNameLengthRefusal returns the permanent error of a git process whose stderr holds the refusal
+// of a reference name by its length, and nil for any other stderr. The hook refuses such a name in a
+// fetch of existing references, which fails the same way until the name is deleted at the source.
+func ReferenceNameLengthRefusal(stderr []byte) error {
+	if !git.IsReferenceNameLengthRefusal(stderr) {
+		return nil
+	}
+
+	return structerr.NewInvalidArgument(
+		"a reference to write has a name over the limit of %d bytes: delete it at the source (doc/graft/LIMITATIONS.md)",
+		git.MaxReferenceNameLength,
+	)
 }

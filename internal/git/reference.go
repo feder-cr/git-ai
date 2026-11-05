@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -171,11 +172,35 @@ const MaxReferenceNameLength = 1024
 // to the names being written only, so it is not part of ValidateReference, which also judges the names
 // of existing references: those can still be read and deleted. The error does not repeat the name.
 func ValidateReferenceNameLength(name string) error {
-	if len(name) > MaxReferenceNameLength {
-		return fmt.Errorf("reference name is %d bytes long, over the limit of %d bytes", len(name), MaxReferenceNameLength)
+	return ValidateRepositoryReferenceNameLength(name, false)
+}
+
+// ObjectPoolReferenceNameAllowance is what the refspec of an object pool, refs/*:refs/remotes/origin/*,
+// adds to the name of a reference of its source. The names under that namespace of a pool may be
+// that much longer than MaxReferenceNameLength, because the limit already bounds those of the source.
+const ObjectPoolReferenceNameAllowance = len(ObjectPoolRefNamespace+"/") - len("refs/")
+
+// referenceNameLengthPhrase is in every refusal of a name by its length, and only there.
+const referenceNameLengthPhrase = "bytes long, over the limit of"
+
+// ValidateRepositoryReferenceNameLength is ValidateReferenceNameLength for a name that a reference
+// transaction writes in a repository, which may be an object pool.
+func ValidateRepositoryReferenceNameLength(name string, inObjectPool bool) error {
+	limit := MaxReferenceNameLength
+	if inObjectPool && strings.HasPrefix(name, ObjectPoolRefNamespace+"/") {
+		limit += ObjectPoolReferenceNameAllowance
+	}
+	if len(name) > limit {
+		return fmt.Errorf("reference name is %d %s %d bytes", len(name), referenceNameLengthPhrase, limit)
 	}
 
 	return nil
+}
+
+// IsReferenceNameLengthRefusal reports whether the output of a git process holds the refusal of a
+// reference name by its length, which the reference-transaction hook writes to its stderr.
+func IsReferenceNameLengthRefusal(stderr []byte) bool {
+	return bytes.Contains(stderr, []byte(referenceNameLengthPhrase))
 }
 
 // ValidateReference checks whether a reference looks valid. It aims to be a faithful implementation of Git's own

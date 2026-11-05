@@ -179,6 +179,9 @@ func (s *server) rewriteHistory(
 			Key: "advice.fetchShowForcedUpdates", Value: "false",
 		}),
 	); err != nil {
+		if refusal := gitcmd.ReferenceNameLengthRefusal([]byte(stderr.String())); refusal != nil {
+			return refusal
+		}
 		return structerr.New("fetching rewritten history: %w", err).WithMetadata("stderr", &stderr)
 	}
 

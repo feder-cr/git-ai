@@ -15,6 +15,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
 	"github.com/feder-cr/git-ai/internal/git/mvcc"
 	"github.com/feder-cr/git-ai/internal/gitaly/config"
+	"github.com/feder-cr/git-ai/internal/gitaly/storage"
 	"github.com/feder-cr/git-ai/internal/graft/changelog"
 	"github.com/feder-cr/git-ai/internal/graft/identity"
 	"github.com/feder-cr/git-ai/internal/graft/policyeval"
@@ -59,7 +60,7 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 	// server: gitaly-hooks forwards the preparing phase only when the storage core wants it, and
 	// then this refuses before the core builds the pack of the transaction.
 	if state == ReferenceTransactionPreparing || state == ReferenceTransactionPrepared {
-		if err := validateReferenceNameLengths(objectHash, changes); err != nil {
+		if err := ValidateReferenceNameLengths(payload.Repo, objectHash, changes); err != nil {
 			return structerr.NewInvalidArgument("%w", err)
 		}
 	}
@@ -187,18 +188,20 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 	return nil
 }
 
-// validateReferenceNameLengths refuses a transaction that writes a reference name, or points a symbolic
-// reference at a name, over git.MaxReferenceNameLength. A deletion is not a write of its name, so that
-// an existing long reference can be cleaned up. A line that does not parse is left to the checks that
-// parse the input for what they do with it.
-func validateReferenceNameLengths(objectHash git.ObjectHash, changes []byte) error {
+// ValidateReferenceNameLengths refuses a transaction of repo that writes a reference name, or points a
+// symbolic reference at a name, over git.MaxReferenceNameLength. A deletion is not a write of its name,
+// so that an existing long reference can be cleaned up. A fetch into an object pool has its allowance
+// (git.ObjectPoolReferenceNameAllowance). A line that does not parse is left to the checks that parse
+// the input for what they do with it.
+func ValidateReferenceNameLengths(repo *gitalypb.Repository, objectHash git.ObjectHash, changes []byte) error {
+	inObjectPool := storage.IsPoolRepository(repo)
 	for _, line := range strings.Split(string(changes), "\n") {
 		_, newValue, name, ok := refchange.ParseHookLine(line)
 		if !ok || objectHash.IsZeroOID(git.ObjectID(newValue)) {
 			continue
 		}
 
-		if err := git.ValidateReferenceNameLength(name); err != nil {
+		if err := git.ValidateRepositoryReferenceNameLength(name, inObjectPool); err != nil {
 			return err
 		}
 		if target, symbolic := strings.CutPrefix(newValue, symbolicHookValuePrefix); symbolic {

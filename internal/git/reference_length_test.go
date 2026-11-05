@@ -28,3 +28,24 @@ func TestValidateReference_doesNotLimitTheLength(t *testing.T) {
 
 	require.NoError(t, ValidateReference("refs/heads/"+strings.Repeat("x", 2000)))
 }
+
+func TestValidateRepositoryReferenceNameLength(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 15, ObjectPoolReferenceNameAllowance)
+
+	name := func(prefix string, length int) string { return prefix + strings.Repeat("x", length-len(prefix)) }
+
+	require.NoError(t, ValidateRepositoryReferenceNameLength(name("refs/remotes/origin/", 1039), true))
+	require.Error(t, ValidateRepositoryReferenceNameLength(name("refs/remotes/origin/", 1040), true))
+	require.Error(t, ValidateRepositoryReferenceNameLength(name("refs/remotes/origin/", 1025), false))
+	require.Error(t, ValidateRepositoryReferenceNameLength(name("refs/heads/", 1025), true))
+}
+
+func TestIsReferenceNameLengthRefusal(t *testing.T) {
+	t.Parallel()
+
+	refusal := ValidateReferenceNameLength(strings.Repeat("x", 1025))
+	require.True(t, IsReferenceNameLengthRefusal([]byte("error: "+refusal.Error()+"\nfatal: ref updates aborted by hook\n")))
+	require.False(t, IsReferenceNameLengthRefusal([]byte("fatal: ref updates aborted by hook\n")))
+}

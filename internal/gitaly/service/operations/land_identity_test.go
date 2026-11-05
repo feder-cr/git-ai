@@ -270,7 +270,7 @@ func mustAtoi(t *testing.T, output []byte) int {
 
 // TestUserLand_branchNameTooLongForTheIdentity refuses, when it arrives, a land on a branch whose
 // name is too long for the identity of its update to be recorded.
-func TestUserLand_branchNameTooLongForTheIdentity(t *testing.T) {
+func TestUserLand_branchNameOverTheReferenceNameLimit(t *testing.T) {
 	t.Parallel()
 
 	ctx, cfg, client := setupOperationsService(t, testhelper.Context(t))
