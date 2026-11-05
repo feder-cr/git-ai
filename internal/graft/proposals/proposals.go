@@ -1,7 +1,7 @@
 // Package proposals keeps the proposals of a land the server did not resolve (PLAN10 14): one
 // reference per branch and landed commit under refs/graft/proposals/, written only by the server.
 // It is the one writer of those references (Update) and the one place they expire (Prune), used
-// by UserLand and by the housekeeping pass.
+// by UserLand, one sweep at a time per branch (Sweeper), and by the housekeeping pass.
 package proposals
 
 import (
@@ -109,12 +109,22 @@ var pruneSkipped = promauto.NewCounter(prometheus.CounterOpts{
 })
 
 // Prune deletes, among the proposal references under dir (a branch's BranchDir, or RefPrefix for
-// every branch), those older than ttl, those beyond the newest MaxPerBranch of each branch, and
-// drop when it is set. The age is the committer date of the proposals' commit, which the server
-// writes with its own clock (never the request's). Each deletion expects the target it read. It
-// returns the number of references deleted. A reference to no commit is left, logged and counted
-// (graft_proposal_prune_skipped_total), and does not stop the pruning of the others.
-func Prune(ctx context.Context, repo *localrepo.Repo, dir string, ttl time.Duration, drop git.ReferenceName, now time.Time) (int, error) {
+// every branch), those older than ttl and those beyond the newest MaxPerBranch of each branch. The
+// age is the committer date of the proposals' commit, which the server writes with its own clock
+// (never the request's). It returns the number of references deleted. A reference to no commit is
+// left, logged and counted (graft_proposal_prune_skipped_total), and does not stop the pruning of
+// the others.
+//
+// Each deletion expects the target it read, and this protects data: the name of a proposal
+// reference is (branch, commit) and landing that commit again replaces its target, so a reference
+// listed as expired or surplus may hold the branch's newest proposal by the time it is deleted. The
+// transaction then fails and deletes nothing, and a later Prune decides from what it lists then.
+func Prune(ctx context.Context, repo *localrepo.Repo, dir string, ttl time.Duration, now time.Time) (int, error) {
+	return prune(ctx, repo, dir, ttl, now, nil)
+}
+
+// prune is Prune, calling beforeDelete, when set, once the deletions are decided, if there are any.
+func prune(ctx context.Context, repo *localrepo.Repo, dir string, ttl time.Duration, now time.Time, beforeDelete func()) (int, error) {
 	if !strings.HasPrefix(dir, RefPrefix) {
 		return 0, fmt.Errorf("pruning proposals: %q is not under %s", dir, RefPrefix)
 	}
@@ -136,11 +146,6 @@ func Prune(ctx context.Context, repo *localrepo.Repo, dir string, ttl time.Durat
 		if !RefNameValid(r.Name) || r.IsSymbolic {
 			continue // not written by Update; nothing of the server's to expire
 		}
-		del := Op{Name: r.Name, NewOID: objectHash.ZeroOID, OldOID: git.ObjectID(r.Target)}
-		if r.Name == drop {
-			remove = append(remove, del)
-			continue
-		}
 		c, err := repo.ReadCommit(ctx, git.Revision(r.Target))
 		if errors.Is(err, localrepo.ErrObjectNotFound) {
 			// A reference to no commit was not written by Update: it is left as it is, and the
@@ -155,7 +160,7 @@ func Prune(ctx context.Context, repo *localrepo.Repo, dir string, ttl time.Durat
 		}
 		when := c.GetCommitter().GetDate().AsTime()
 		if now.Sub(when) > ttl {
-			remove = append(remove, del)
+			remove = append(remove, Op{Name: r.Name, NewOID: objectHash.ZeroOID, OldOID: git.ObjectID(r.Target)})
 			continue
 		}
 		branch := strings.SplitN(strings.TrimPrefix(r.Name.String(), RefPrefix), "/", 2)[0]
@@ -170,8 +175,50 @@ func Prune(ctx context.Context, repo *localrepo.Repo, dir string, ttl time.Durat
 	if len(remove) == 0 {
 		return 0, nil
 	}
+	if beforeDelete != nil {
+		beforeDelete()
+	}
 	if err := Update(ctx, repo, remove); err != nil {
 		return 0, fmt.Errorf("pruning proposals: %w", err)
 	}
 	return len(remove), nil
+}
+
+// drop deletes the proposal reference name, the proposal of a change that landed. It expects the
+// target it reads just before deleting, so that a proposal that a land of the same commit wrote
+// since stays, and that fails the drop. A reference already deleted, before the read or by a sweep
+// between the read and the deletion, is what it wants, and not an error. A symbolic reference was
+// not written by Update and is left, as Prune leaves it. It calls beforeDelete, when set, between
+// the read and the deletion.
+func drop(ctx context.Context, repo *localrepo.Repo, name git.ReferenceName, beforeDelete func()) error {
+	if !RefNameValid(name) {
+		return fmt.Errorf("refusing to drop %q: not a proposal reference", name)
+	}
+	ref, err := repo.GetReference(ctx, name)
+	if errors.Is(err, git.ErrReferenceNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", name, err)
+	}
+	if ref.IsSymbolic {
+		return nil
+	}
+	objectHash, err := repo.ObjectHash(ctx)
+	if err != nil {
+		return fmt.Errorf("detecting object hash: %w", err)
+	}
+	if beforeDelete != nil {
+		beforeDelete()
+	}
+	updateErr := Update(ctx, repo, []Op{{Name: name, NewOID: objectHash.ZeroOID, OldOID: git.ObjectID(ref.Target)}})
+	if updateErr == nil {
+		return nil
+	}
+	// The deletion failed: it is done only if the reference is gone now. Any other state, a new
+	// target or a read that fails too, leaves the failure standing.
+	if _, err := repo.GetReference(ctx, name); errors.Is(err, git.ErrReferenceNotFound) {
+		return nil
+	}
+	return fmt.Errorf("dropping %s: %w", name, updateErr)
 }

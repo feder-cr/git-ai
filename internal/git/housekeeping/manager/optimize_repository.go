@@ -704,7 +704,7 @@ func (m *RepositoryManager) pruneGraftProposals(ctx context.Context, repo *local
 	if m.proposalTTL <= 0 {
 		return
 	}
-	n, err := proposals.Prune(ctx, repo, proposals.RefPrefix, m.proposalTTL, "", time.Now())
+	n, err := proposals.Prune(ctx, repo, proposals.RefPrefix, m.proposalTTL, time.Now())
 	if err != nil {
 		graftProposalPruneErrors.Inc()
 		m.logger.WithError(err).ErrorContext(ctx, "graft: pruning the proposals of the land failed")

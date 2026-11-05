@@ -87,10 +87,11 @@ func TestPrune(t *testing.T) {
 	require.NoError(t, Update(ctx, repo, ops))
 
 	// The branch's prune touches its own directory only.
-	n, err := Prune(ctx, repo, BranchDir("main"), 7*24*time.Hour, name("main", 0), now)
+	require.NoError(t, NewSweeper().Drop(ctx, repo, name("main", 0)))
+	n, err := Prune(ctx, repo, BranchDir("main"), 7*24*time.Hour, now)
 	require.NoError(t, err)
-	// 22 recent: the dropped one goes, and of the 21 left the oldest is beyond 20; plus the old one.
-	require.Equal(t, 3, n, "the dropped one, the old one, and the oldest beyond 20")
+	// 22 recent: the dropped one went, and of the 21 left the oldest is beyond 20; plus the old one.
+	require.Equal(t, 2, n, "the old one, and the oldest beyond 20")
 	refs := list(BranchDir("main"))
 	require.Len(t, refs, 20)
 	require.NotContains(t, refs, name("main", 0).String(), "dropped")
@@ -100,13 +101,13 @@ func TestPrune(t *testing.T) {
 	require.Contains(t, list(BranchDir("idle")), name("idle", 0).String(), "another branch is not touched")
 
 	// The housekeeping prune covers every branch: the idle branch's old proposal expires.
-	n, err = Prune(ctx, repo, RefPrefix, 7*24*time.Hour, "", now)
+	n, err = Prune(ctx, repo, RefPrefix, 7*24*time.Hour, now)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 	require.Empty(t, list(BranchDir("idle")))
 	require.Len(t, list(BranchDir("fresh")), 1)
 
-	_, err = Prune(ctx, repo, "refs/heads/", time.Hour, "", now)
+	_, err = Prune(ctx, repo, "refs/heads/", time.Hour, now)
 	require.ErrorContains(t, err, "is not under")
 }
 
@@ -129,7 +130,7 @@ func TestPrune_skipsAReferenceToNoCommit(t *testing.T) {
 	}))
 
 	before := testutil.ToFloat64(pruneSkipped)
-	n, err := Prune(ctx, repo, RefPrefix, 7*24*time.Hour, "", now)
+	n, err := Prune(ctx, repo, RefPrefix, 7*24*time.Hour, now)
 	require.NoError(t, err)
 	require.Equal(t, 1, n, "the old proposal is pruned")
 	require.Equal(t, []string{stray.String()}, list(BranchDir("main")))

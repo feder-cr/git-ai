@@ -284,6 +284,7 @@ func (fx resolveFixture) server(t *testing.T, rcfg config.GraftResolver) *Server
 		locator:          locator,
 		localRepoFactory: localrepo.NewFactory(testhelper.NewLogger(t), locator, gittest.NewCommandFactory(t, fx.cfg), cache),
 		graftPolicy:      policystore.New(nil),
+		proposalSweeper:  unboundedSweeper(),
 	}
 }
 
