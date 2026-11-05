@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	gitalyauth "github.com/feder-cr/git-ai/auth"
 	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/featureflag"
+	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
 	"github.com/feder-cr/git-ai/internal/gitaly/hook"
 	"github.com/feder-cr/git-ai/internal/grpc/client"
@@ -357,16 +359,36 @@ func referenceTransactionHook(ctx context.Context, payload gitcmd.HooksPayload, 
 		return fmt.Errorf("reference-transaction hook is missing required arguments, got %q", args)
 	}
 
+	var stdin io.Reader = os.Stdin
+	var lengthRefusal error
+
 	var state gitalypb.ReferenceTransactionHookRequest_State
 	switch args[0] {
 	case "preparing":
+		changes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading the reference updates: %w", err)
+		}
+		objectHash, err := git.ObjectHashByFormat(payload.ObjectFormat)
+		if err != nil {
+			return fmt.Errorf("looking up object hash: %w", err)
+		}
+		lengthRefusal = hook.ValidateReferenceNameLengths(payload.Repo, objectHash, changes)
+
 		// The "preparing" state is forwarded only when the Graft storage core is
 		// authoritative: its write path builds and uploads the pack of the
 		// transaction before git takes the reference locks. Otherwise the RPC is
-		// skipped as upstream does, which keeps the votes of Praefect unchanged.
+		// skipped as upstream does, which keeps the votes of Praefect unchanged, and a
+		// name over the limit stops here, before git takes the locks of its long path.
 		if !payload.StoragePreparing {
+			if lengthRefusal != nil {
+				return hookError{returnCode: 1, clientMsg: lengthRefusal.Error()}
+			}
 			return nil
 		}
+		// The storage core has to learn of the new transaction even when this one is refused,
+		// which the server does before it refuses.
+		stdin = bytes.NewReader(changes)
 		state = gitalypb.ReferenceTransactionHookRequest_PREPARING
 	case "prepared":
 		state = gitalypb.ReferenceTransactionHookRequest_PREPARED
@@ -393,11 +415,16 @@ func referenceTransactionHook(ctx context.Context, payload gitcmd.HooksPayload, 
 
 	f := sendFunc(streamio.NewWriter(func(p []byte) error {
 		return referenceTransactionHookStream.Send(&gitalypb.ReferenceTransactionHookRequest{Stdin: p})
-	}), referenceTransactionHookStream, os.Stdin)
+	}), referenceTransactionHookStream, stdin)
 
-	if returnCode, err := stream.Handler(func() (stream.StdoutStderrResponse, error) {
+	returnCode, err := stream.Handler(func() (stream.StdoutStderrResponse, error) {
 		return referenceTransactionHookStream.Recv()
-	}, f, os.Stdout, os.Stderr); err != nil {
+	}, f, os.Stdout, os.Stderr)
+	// The refusal goes to stderr, where the server finds it in the output of the git process.
+	if lengthRefusal != nil {
+		return hookError{returnCode: 1, clientMsg: lengthRefusal.Error()}
+	}
+	if err != nil {
 		return fmt.Errorf("error when receiving data for reference-transaction hook: %w", err)
 	} else if returnCode != 0 {
 		return hookError{returnCode: int(returnCode)}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/graft/changelog"
 	"github.com/feder-cr/git-ai/internal/graft/corestore"
 )
@@ -64,6 +65,18 @@ func validateChangeset(in corestore.ChangesetInput) error {
 		// on SQLite only.
 		if !storableText(string(u.New)) {
 			return fmt.Errorf("storage core: new target %q of reference %q is not valid UTF-8 text", u.New, u.Name)
+		}
+
+		// A deletion is exempt, so that an existing long reference can be cleaned up.
+		if !u.New.Absent() {
+			if err := git.ValidateReferenceNameLength(u.Name); err != nil {
+				return fmt.Errorf("storage core: %w", err)
+			}
+			if u.New.IsSymbolic() {
+				if err := git.ValidateReferenceNameLength(u.New.SymbolicName()); err != nil {
+					return fmt.Errorf("storage core: symbolic reference target: %w", err)
+				}
+			}
 		}
 	}
 

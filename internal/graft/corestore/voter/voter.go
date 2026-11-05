@@ -28,9 +28,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc/codes"
-
 	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
@@ -46,6 +43,8 @@ import (
 	"github.com/feder-cr/git-ai/internal/log"
 	"github.com/feder-cr/git-ai/internal/structerr"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
+	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/grpc/codes"
 )
 
 // CrashEnv names the test-only environment variable that makes the voter
@@ -231,7 +230,7 @@ func (v *Voter) preparePack(ctx context.Context, payload gitcmd.HooksPayload, ch
 		return nil, fmt.Errorf("object format: %w", err)
 	}
 
-	updates, err := parseInput(changes, hash)
+	updates, err := parsePayloadInput(payload, changes, hash)
 	if err != nil {
 		// Prepared rejects or skips the input with the same error.
 		return nil, nil
@@ -377,7 +376,7 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 		return fmt.Errorf("storage core: object format: %w", err)
 	}
 
-	updates, err := parseInput(changes, hash)
+	updates, err := parsePayloadInput(payload, changes, hash)
 	if err != nil {
 		return fmt.Errorf("storage core: malformed reference transaction input: %w", err)
 	}
@@ -1140,7 +1139,7 @@ func (v *Voter) committedLocally(ctx context.Context, payload gitcmd.HooksPayloa
 	if err != nil {
 		return false
 	}
-	updates, err := parseInput(changes, hash)
+	updates, err := parsePayloadInput(payload, changes, hash)
 	if err != nil || len(updates) == 0 {
 		return false
 	}
@@ -1185,10 +1184,15 @@ func (v *Voter) Collect(metrics chan<- prometheus.Metric) {
 	}
 }
 
+// parsePayloadInput parses the hook input of the transaction of payload's repository.
+func parsePayloadInput(payload gitcmd.HooksPayload, changes []byte, hash git.ObjectHash) ([]inputUpdate, error) {
+	return parseInput(changes, hash, storage.IsPoolRepository(payload.Repo))
+}
+
 // parseInput parses the hook input "<old> SP <new> SP <ref>" lines. Empty lines
 // are ignored. Values are object IDs of the hash or symbolic "ref:<target>"
 // values.
-func parseInput(changes []byte, hash git.ObjectHash) ([]inputUpdate, error) {
+func parseInput(changes []byte, hash git.ObjectHash, inObjectPool bool) ([]inputUpdate, error) {
 	zero := string(hash.ZeroOID)
 
 	var updates []inputUpdate
@@ -1220,6 +1224,16 @@ func parseInput(changes []byte, hash git.ObjectHash) ([]inputUpdate, error) {
 				return nil, fmt.Errorf("new value of %q: %w", name, err)
 			}
 			u.new = corestore.Target(newValue)
+
+			// A deletion is exempt, so that an existing long reference can be cleaned up.
+			if err := git.ValidateRepositoryReferenceNameLength(name, inObjectPool); err != nil {
+				return nil, err
+			}
+			if u.new.IsSymbolic() {
+				if err := git.ValidateReferenceNameLength(u.new.SymbolicName()); err != nil {
+					return nil, fmt.Errorf("symbolic reference target: %w", err)
+				}
+			}
 		}
 
 		updates = append(updates, u)

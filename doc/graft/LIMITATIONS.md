@@ -20,6 +20,42 @@ machine.
   configuration. Whoever can edit the server configuration can change who may
   write where. Protect the configuration and the token files accordingly.
 
+## Reference name length
+
+Reference names, and symbolic reference targets, over 1024 bytes are refused.
+An existing reference over the limit can still be read and deleted. An object
+pool's names under `refs/remotes/origin/` may be 15 bytes longer, which is what
+the pool's refspec adds to a name of its source.
+
+A repository that holds such a reference fails, with a permanent error, whatever
+copies its references until the reference is deleted: forking it, creating or
+replicating a replica, creating or fetching into an object pool, restoring a
+backup, `FetchBundle`, `CreateRepositoryFromBundle`, `RewriteHistory` and
+importing it into the storage core. One such reference on a remote fails the
+whole of a mirror's `FetchRemote`.
+
+To find such references (the second command is for an unborn `HEAD`, which the
+first does not list), and delete one:
+
+    git -C <repository> for-each-ref --format='%(refname) %(symref)' | LC_ALL=C awk 'length($1) > 1024 || length($2) > 1024'
+    git -C <repository> symbolic-ref -q HEAD | LC_ALL=C awk 'length($0) > 1024'
+    git -C <repository> update-ref --no-deref -d <reference>
+
+`--no-deref` matters: without it, deleting a symbolic reference deletes its target.
+In an object pool the first command also lists the allowed names of 1025 to 1039
+bytes under `refs/remotes/origin/`. The `DeleteRefs` RPC and a push that deletes
+the reference work too, where the repository's writes are allowed.
+
+An incomplete registration left by an earlier failed import is refused the same
+way. In authoritative mode the server may refuse writes to such a repository, so
+run the commands above on the node, with writers stopped, and import again: the
+import resumes.
+
+The allowance of object pools goes by the path of the repository, so a repository
+at a pool-shaped path has it too, up to 1039 bytes under `refs/remotes/origin/`.
+A symbolic reference that points at nothing, other than `HEAD`, is not checked
+when a repository is created from a copy.
+
 ## Security limitations
 
 ### Who the policy decides on

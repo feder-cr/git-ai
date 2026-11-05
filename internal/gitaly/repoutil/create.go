@@ -1,6 +1,7 @@
 package repoutil
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -9,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/trace"
+	"strings"
 	"time"
 
+	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/git/catfile"
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
@@ -148,6 +151,13 @@ func Create(
 	}
 
 	newRepo := localrepo.New(logger, locator, gitCmdFactory, catfileCache, newRepoProto)
+
+	// The seed can bring references from a URL, a bundle, a snapshot or another repository, and git
+	// clone runs no hook that could refuse them, so the names are checked here. The repository is
+	// still the temporary one: when it is refused nothing lands.
+	if err := validateReferenceNameLengths(ctx, newRepo, storage.IsPoolRepository(repository)); err != nil {
+		return err
+	}
 
 	// In order to guarantee that the repository is going to be the same across all
 	// Gitalies in case we're behind Praefect, we vote on the logical state of the
@@ -296,6 +306,67 @@ func VoteRepository(ctx context.Context, voteHash *voting.VoteHash, repo *localr
 
 	if err := voteReferences(ctx, voteHash, repo); err != nil {
 		return fmt.Errorf("vote on references: %w", err)
+	}
+
+	return nil
+}
+
+// validateReferenceNameLengths refuses a new repository that holds a reference name, or a symbolic
+// reference target, over the limit. git-for-each-ref(1) leaves out a symbolic reference that points at
+// nothing, so HEAD, which git-clone(1) copies from the remote even when it is unborn, is read by itself.
+func validateReferenceNameLengths(ctx context.Context, repo *localrepo.Repo, inObjectPool bool) error {
+	var head, stderr bytes.Buffer
+	err := repo.ExecAndWait(ctx, gitcmd.Command{
+		Name:  "symbolic-ref",
+		Flags: []gitcmd.Option{gitcmd.Flag{Name: "--quiet"}, gitcmd.Flag{Name: "--no-recurse"}},
+		Args:  []string{"HEAD"},
+	}, gitcmd.WithDisabledHooks(), gitcmd.WithStdout(&head), gitcmd.WithStderr(&stderr))
+	// git-symbolic-ref(1) with --quiet exits with 1 when HEAD is detached.
+	if code, ok := command.ExitStatus(err); err != nil && (!ok || code != 1) {
+		return fmt.Errorf("reading HEAD: %w, stderr: %q", err, stderr.String())
+	}
+	if err := git.ValidateReferenceNameLength(strings.TrimSuffix(head.String(), "\n")); err != nil {
+		return structerr.NewInvalidArgument("%w", err)
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	stderr.Reset()
+	cmd, err := repo.Exec(ctx, gitcmd.Command{
+		Name:  "for-each-ref",
+		Flags: []gitcmd.Option{gitcmd.Flag{Name: "--format=%(refname) %(symref)"}},
+	}, gitcmd.WithSetupStdout(), gitcmd.WithStderr(&stderr))
+	if err != nil {
+		return fmt.Errorf("spawning for-each-ref: %w", err)
+	}
+
+	for lines := bufio.NewReader(cmd); ; {
+		line, readErr := lines.ReadString('\n')
+		if err := validateForEachRefLine(line, inObjectPool); err != nil {
+			cancel()
+			_ = cmd.Wait()
+			return structerr.NewInvalidArgument("%w", err)
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("listing references: %w, stderr: %q", err, stderr.String())
+	}
+
+	return nil
+}
+
+// validateForEachRefLine judges a "<name> <symbolic target>" line of git-for-each-ref(1). Only the ASCII
+// space separates the fields: a name holds no ASCII space, but may hold other whitespace such as U+00A0.
+func validateForEachRefLine(line string, inObjectPool bool) error {
+	for name := range strings.SplitSeq(strings.TrimSuffix(line, "\n"), " ") {
+		if err := git.ValidateRepositoryReferenceNameLength(name, inObjectPool); err != nil {
+			return err
+		}
 	}
 
 	return nil
