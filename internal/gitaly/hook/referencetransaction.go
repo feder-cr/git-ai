@@ -53,6 +53,14 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 		return fmt.Errorf("reading stdin from request: %w", err)
 	}
 
+	// The storage core ties the admission of a transaction to its git process by the invocation,
+	// which HooksPayloadFromEnv does not restore.
+	payload.Changelog.Invocation = changesetInvocation(env)
+
+	if state == ReferenceTransactionPreparing && m.storageVoter != nil {
+		m.storageVoter.TransactionStarts(ctx, payload)
+	}
+
 	m.trackPendingTransaction(state, env, changes)
 
 	var phase voting.Phase

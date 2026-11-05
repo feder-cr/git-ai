@@ -67,6 +67,166 @@ func TestAdmissionAdmitsInArrivalOrder(t *testing.T) {
 	require.Equal(t, 0.0, testutil.ToFloat64(a.waiting))
 }
 
+// TestAdmissionReleaseIsIdempotentPerKey verifies that the second release of a key does nothing, and
+// that it reports so: A fails, B is admitted, and A's late release does not free B.
+func TestAdmissionReleaseIsIdempotentPerKey(t *testing.T) {
+	t.Parallel()
+	ctx := testhelper.Context(t)
+	a, waiting := queued(time.Hour, time.Hour)
+
+	require.True(t, a.Acquire(ctx, "repo", key(0), WriterHook))
+	b := acquireAsync(ctx, t, a, waiting, "repo", key(1))
+
+	require.True(t, a.Release("repo", key(0)))
+	require.True(t, <-b)
+
+	require.False(t, a.Release("repo", key(0)), "the release of A is late")
+	require.False(t, a.ReleaseUnreported("repo", key(0)), "the exit of A is late")
+	require.Equal(t, 0.0, testutil.ToFloat64(a.exited), "A released nothing at its exit")
+
+	// B still holds the admission: a third writer queues behind it.
+	c := acquireAsync(ctx, t, a, waiting, "repo", key(2))
+	select {
+	case <-c:
+		t.Fatal("the late release of A freed the admission of B")
+	default:
+	}
+
+	require.True(t, a.Release("repo", key(1)))
+	require.True(t, <-c)
+	require.True(t, a.Release("repo", key(2)))
+	require.False(t, a.Release("repo", key(2)))
+	require.Empty(t, a.queues)
+}
+
+// TestAdmissionReleaseUnreported verifies that the exit of a process hands the admission over,
+// counts only what it released, and does not touch a writer that only has a place in the queue.
+func TestAdmissionReleaseUnreported(t *testing.T) {
+	t.Parallel()
+	ctx := testhelper.Context(t)
+	a, waiting := queued(time.Hour, time.Hour)
+
+	require.True(t, a.Acquire(ctx, "repo", key(0), WriterHook))
+	b := acquireAsync(ctx, t, a, waiting, "repo", key(1))
+
+	require.False(t, a.ReleaseUnreported("repo", key(1)), "B is only queued")
+	require.Equal(t, 0.0, testutil.ToFloat64(a.exited))
+
+	require.True(t, a.ReleaseUnreported("repo", key(0)))
+	require.True(t, <-b)
+	require.Equal(t, 1.0, testutil.ToFloat64(a.exited))
+
+	require.False(t, a.ReleaseUnreported("repo", key(0)))
+	require.Equal(t, 1.0, testutil.ToFloat64(a.exited))
+
+	require.True(t, a.Release("repo", key(1)))
+	require.False(t, a.ReleaseUnreported("repo", key(1)), "B reported its end")
+	require.Equal(t, 1.0, testutil.ToFloat64(a.exited))
+
+	var nilAdmission *Admission
+	require.False(t, nilAdmission.ReleaseUnreported("repo", key(0)))
+}
+
+// givingUpWriter queues a writer with a context of its own, cancels it, and returns once the writer
+// stopped waiting and is paused before it takes the lock of the admission. resume lets it go on and
+// returns what Acquire returned.
+func givingUpWriter(ctx context.Context, t *testing.T, a *Admission, waiting <-chan string, path string, k Key) (resume func() bool) {
+	t.Helper()
+
+	paused, proceed := make(chan struct{}), make(chan struct{})
+	a.onGiveUp = func(string) {
+		close(paused)
+		<-proceed
+	}
+
+	writerCtx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	result := acquireAsync(writerCtx, t, a, waiting, path, k)
+	cancel()
+	<-paused
+
+	return func() bool {
+		close(proceed)
+		return <-result
+	}
+}
+
+// TestAdmissionWriterGivingUpAfterItsAdmissionEnded covers a writer that is admitted while it gives
+// up, and whose admission ends before it takes the lock: the exit of its process cancels its context
+// and releases it. Its turn has gone, so it must not hand anything over again.
+func TestAdmissionWriterGivingUpAfterItsAdmissionEnded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the next writer holds it, a later one stays queued", func(t *testing.T) {
+		t.Parallel()
+		ctx := testhelper.Context(t)
+		a, waiting := queued(time.Hour, time.Hour)
+
+		require.True(t, a.Acquire(ctx, "repo", key(0), WriterHook))
+		resume := givingUpWriter(ctx, t, a, waiting, "repo", key(1))
+		x := acquireAsync(ctx, t, a, waiting, "repo", key(2))
+		y := acquireAsync(ctx, t, a, waiting, "repo", key(3))
+
+		require.True(t, a.Release("repo", key(0)), "the holder ends, W is admitted")
+		require.True(t, a.Release("repo", key(1)), "the process of W ends, X is admitted")
+		require.True(t, <-x)
+
+		require.False(t, resume())
+
+		require.Equal(t, 1.0, testutil.ToFloat64(a.waiting), "Y still waits behind X")
+		select {
+		case <-y:
+			t.Fatal("two live writers hold the admission")
+		default:
+		}
+
+		require.True(t, a.Release("repo", key(2)))
+		require.True(t, <-y)
+		require.True(t, a.Release("repo", key(3)))
+		require.Empty(t, a.queues)
+	})
+
+	t.Run("a newer queue of the repository stays", func(t *testing.T) {
+		t.Parallel()
+		ctx := testhelper.Context(t)
+		a, waiting := queued(time.Hour, time.Hour)
+
+		require.True(t, a.Acquire(ctx, "repo", key(0), WriterHook))
+		resume := givingUpWriter(ctx, t, a, waiting, "repo", key(1))
+
+		require.True(t, a.Release("repo", key(0)))
+		require.True(t, a.Release("repo", key(1)))
+		require.Empty(t, a.queues, "the queue ended with W")
+
+		require.True(t, a.Acquire(ctx, "repo", key(2), WriterHook), "a new writer has a new queue")
+
+		require.False(t, resume())
+
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		a.onGiveUp = nil
+		require.False(t, a.Acquire(cancelled, "repo", key(3), WriterHook), "the new writer still holds it")
+		require.True(t, a.Release("repo", key(2)))
+	})
+
+	t.Run("while it still holds it, it hands it over", func(t *testing.T) {
+		t.Parallel()
+		ctx := testhelper.Context(t)
+		a, waiting := queued(time.Hour, time.Hour)
+
+		require.True(t, a.Acquire(ctx, "repo", key(0), WriterHook))
+		resume := givingUpWriter(ctx, t, a, waiting, "repo", key(1))
+		x := acquireAsync(ctx, t, a, waiting, "repo", key(2))
+
+		require.True(t, a.Release("repo", key(0)), "W is admitted, with nobody using it")
+		require.False(t, resume())
+		require.True(t, <-x)
+		require.False(t, a.Release("repo", key(1)))
+		require.True(t, a.Release("repo", key(2)))
+		require.Empty(t, a.queues)
+	})
+}
+
 func TestAdmissionCancelledWriterLeavesTheQueue(t *testing.T) {
 	t.Parallel()
 	ctx := testhelper.Context(t)

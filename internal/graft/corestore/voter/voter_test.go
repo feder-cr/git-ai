@@ -73,6 +73,8 @@ type fixture struct {
 	base    uint64
 	voter   *voter.Voter
 	applier *fakeApplier
+	// logs holds what the voter logged.
+	logs    testhelper.LoggerHook
 	payload gitcmd.HooksPayload
 	zero    string
 	// a, b and c are a chain of commits (a <- b <- c) that no reference
@@ -156,6 +158,7 @@ func newFixture(t *testing.T, opts fixtureOptions) *fixture {
 		base:     base,
 		voter:    voter.New(core, logger, factory, locator, applier),
 		applier:  applier,
+		logs:     testhelper.AddLoggerHook(logger),
 		payload:  gitcmd.HooksPayload{Repo: repo, ObjectFormat: gittest.DefaultObjectHash.Format},
 		zero:     gittest.DefaultObjectHash.ZeroOID.String(),
 		a:        a,
@@ -248,14 +251,14 @@ func useFilesBackend(t *testing.T, cfg config.Cfg, repoPath string) {
 	require.Equal(t, git.ReferenceBackendFiles.Name, backend.Name)
 }
 
-// metricValue sums the counter samples of name whose labels include labels.
-// It registers the voter in a pedantic registry, which also checks that the
-// collector is consistent.
-func metricValue(t *testing.T, v *voter.Voter, name string, labels map[string]string) float64 {
+// metricValue sums the samples of name whose labels include labels. It registers
+// the collector (the voter, the admission) in a pedantic registry, which also
+// checks that the collector is consistent.
+func metricValue(t *testing.T, collector prometheus.Collector, name string, labels map[string]string) float64 {
 	t.Helper()
 
 	reg := prometheus.NewPedanticRegistry()
-	require.NoError(t, reg.Register(v))
+	require.NoError(t, reg.Register(collector))
 
 	families, err := reg.Gather()
 	require.NoError(t, err)
@@ -271,6 +274,9 @@ func metricValue(t *testing.T, v *voter.Voter, name string, labels map[string]st
 			}
 			if c := metric.GetCounter(); c != nil {
 				sum += c.GetValue()
+			}
+			if g := metric.GetGauge(); g != nil {
+				sum += g.GetValue()
 			}
 			if h := metric.GetHistogram(); h != nil {
 				sum += float64(h.GetSampleCount())

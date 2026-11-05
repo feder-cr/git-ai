@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 
@@ -96,41 +95,22 @@ func (s *server) sshReceivePack(stream gitalypb.SSHService_SSHReceivePackServer,
 		return err
 	}
 
-	// When an `exec.Cmd` has its `cmd.Stdin` configured with an `io.Reader`
-	// that is not also of type `os.File` a goroutine is automatically
-	// configured that performs an `io.Copy()` between the reader and a newly
-	// created pipe. A problem with this can arise when `cmd.Wait()` is invoked
-	// because it waits not only for the process to complete but also all the
-	// goroutine to end. If the configured `cmd.Stdin` is only of type
-	// `io.Reader` and never closed, the goroutine will never end. This leads to
-	// `cmd.Wait()` being blocked indefinitely.
-	//
-	// Within Gitaly this problem can manifest itself when a git process crashes
-	// before `stdin` reaches EOF. To date this has only been noticed as a
-	// problem for the `SSHReceivePack` RPC, so a pipe and goroutine have been
-	// created explicitly to prevent `cmd.Wait()` from blocking indefinitely.
-	pr, pw, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("creating pipe: %w", err)
+	// The client may never close stdin, see command.DetachStdin. Recording happens when the copy
+	// ended rather than in a deferred call, so the RPC never waits for stdin to drain.
+	var copied func()
+	if featureflag.ReceivePackStats.IsEnabled(ctx) {
+		statsCapture := &stats.PrefixCapture{}
+		copied = func() {
+			stats.RecordReceivePack(ctx, s.logger, statsCapture.Bytes(), s.receivePackObjectsMetrics)
+		}
+		stdin = io.TeeReader(stdin, statsCapture)
 	}
 
-	if featureflag.ReceivePackStats.IsEnabled(ctx) {
-		// Recording happens inside this goroutine rather than a deferred call
-		// so the RPC never waits for stdin to drain: if the client never
-		// closes stdin, the goroutine may outlive the RPC, as this pipe
-		// already allows.
-		statsCapture := &stats.PrefixCapture{}
-		go func() {
-			_, _ = io.Copy(io.MultiWriter(pw, statsCapture), stdin)
-			_ = pw.Close()
-			stats.RecordReceivePack(ctx, s.logger, statsCapture.Bytes(), s.receivePackObjectsMetrics)
-		}()
-	} else {
-		go func() {
-			_, _ = io.Copy(pw, stdin)
-			_ = pw.Close()
-		}()
+	pr, err := command.DetachStdin(stdin, copied)
+	if err != nil {
+		return fmt.Errorf("detaching stdin: %w", err)
 	}
+	defer pr.Close()
 
 	repo := s.localRepoFactory.Build(req.GetRepository())
 

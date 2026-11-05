@@ -27,7 +27,8 @@ import (
 )
 
 // Key identifies the holder of an admission between Acquire and Release. The
-// voter uses the pending key of the transaction (its repository and hook input).
+// voter's key is unique to the process of the transaction, so that a release
+// never frees the admission of another process (Voter.admit).
 type Key [32]byte
 
 // Writers, the label of the admission metrics.
@@ -48,10 +49,10 @@ type Admission struct {
 	// timeout (another transaction on the same repository held open by the
 	// same caller) does not wait forever on the admission instead.
 	waitBound time.Duration
-	// holdBound is how long an admission is held at most. The hook passes no
-	// transaction identity and git can die between the phases of a transaction
-	// without reporting Committed or Aborted, so an admission is never held
-	// beyond it.
+	// holdBound is how long an admission is held at most. The end of a
+	// transaction's process releases its admission (ReleaseUnreported), so
+	// this only bounds a live process that stays between two phases, and a hook
+	// call without an invocation, whose process nobody tracks.
 	holdBound time.Duration
 
 	mu     sync.Mutex
@@ -61,11 +62,15 @@ type Admission struct {
 	// onWait is called when a writer starts waiting; tests set it to know that
 	// a writer is queued.
 	onWait func(path string)
+	// onGiveUp is called when a writer stopped waiting, before it takes the lock;
+	// tests set it to have the queue change at that point.
+	onGiveUp func(path string)
 
 	wait     *prometheus.HistogramVec
 	waiting  prometheus.Gauge
 	bypassed *prometheus.CounterVec
 	expired  prometheus.Counter
+	exited   prometheus.Counter
 }
 
 var _ prometheus.Collector = (*Admission)(nil)
@@ -110,6 +115,10 @@ func NewAdmission(waitBound, holdBound time.Duration) *Admission {
 		expired: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "graft_storage_ref_admission_expired_total",
 			Help: "Number of admissions ended by the hold bound instead of their release (a writer that never reported its end).",
+		}),
+		exited: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "graft_storage_ref_admission_released_unreported_total",
+			Help: "Number of admissions released because the git process of the transaction ended, or went on to its next transaction, without reporting Committed or Aborted (a prepare that failed in git, a killed process).",
 		}),
 	}
 	for _, writer := range []string{WriterHook, WriterSyncer} {
@@ -164,14 +173,23 @@ func (a *Admission) Acquire(ctx context.Context, path string, key Key, writer st
 		cancelled = true
 	}
 
+	if a.onGiveUp != nil {
+		a.onGiveUp(path)
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	select {
 	case <-t.admitted:
-		// Admitted while giving up.
+		// Admitted while giving up. The admission may have ended meanwhile, by a
+		// release or the hold bound, and then belongs to a later writer, in this
+		// queue or in a newer one of the repository.
 		if cancelled {
-			a.handOffLocked(path, q)
+			if a.queues[path] == q && q.holder == t {
+				t.expiry.Stop()
+				a.handOffLocked(path, q)
+			}
 			return false
 		}
 		a.wait.WithLabelValues(writer).Observe(time.Since(start).Seconds())
@@ -213,14 +231,15 @@ func (a *Admission) AcquireUnique(ctx context.Context, path, writer string) func
 }
 
 // Release ends the admission of key to the reference lock of the repository at
-// path. It does nothing when key does not hold it: the admission ended at the
-// hold bound, or the writer was not admitted. Two transactions with the same
-// key (the same repository and hook input) are not told apart: the release of
-// one may end the admission of the other, which then waits on git's lock as
-// without admission.
-func (a *Admission) Release(path string, key Key) {
+// path, and reports whether key held it. It does nothing when key does not hold
+// it: the admission ended already (released before, or at the hold bound), the
+// writer was not admitted, or it holds no more than a place in the queue. So a
+// release is idempotent per key and never frees the admission of another key.
+// Two writers with the same key are not told apart; only a hook call without an
+// invocation has a key that another writer can share (Voter.admit).
+func (a *Admission) Release(path string, key Key) bool {
 	if a == nil {
-		return
+		return false
 	}
 
 	a.mu.Lock()
@@ -228,10 +247,23 @@ func (a *Admission) Release(path string, key Key) {
 
 	q := a.queues[path]
 	if q == nil || q.holder == nil || q.holder.key != key {
-		return
+		return false
 	}
 	q.holder.expiry.Stop()
 	a.handOffLocked(path, q)
+	return true
+}
+
+// ReleaseUnreported is Release for a transaction known to have ended without a
+// report: its process ended, or went on to its next transaction. When key still
+// held the admission, git did not report Committed or Aborted: that is counted,
+// and true tells the caller to log it.
+func (a *Admission) ReleaseUnreported(path string, key Key) bool {
+	if !a.Release(path, key) {
+		return false
+	}
+	a.exited.Inc()
+	return true
 }
 
 // admitLocked makes t the holder of q.
@@ -275,6 +307,7 @@ func (a *Admission) Describe(descs chan<- *prometheus.Desc) {
 	a.waiting.Describe(descs)
 	a.bypassed.Describe(descs)
 	a.expired.Describe(descs)
+	a.exited.Describe(descs)
 }
 
 // Collect implements prometheus.Collector.
@@ -283,4 +316,5 @@ func (a *Admission) Collect(metrics chan<- prometheus.Metric) {
 	a.waiting.Collect(metrics)
 	a.bypassed.Collect(metrics)
 	a.expired.Collect(metrics)
+	a.exited.Collect(metrics)
 }

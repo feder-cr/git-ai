@@ -742,7 +742,8 @@ without a single divergence.
 | `graft_storage_ref_admission_wait_seconds{writer}` | Wait of a local reference writer (`hook`, `syncer`) for its turn at the repository's reference lock. |
 | `graft_storage_ref_admission_waiting` | Writers waiting for their turn, all repositories. |
 | `graft_storage_ref_admission_bypassed_total{writer}` | Writers that went on to git's lock without their turn after `reftable.lockTimeout` (10 s). |
-| `graft_storage_ref_admission_expired_total` | Turns ended by the 10 s bound instead of their release (a git process that died between its phases). |
+| `graft_storage_ref_admission_expired_total` | Turns ended by the 10 s bound instead of their release (a live git process that stayed between its phases, or a hook call without a tracked process). |
+| `graft_storage_ref_admission_released_unreported_total` | Turns released because the git process of the transaction ended, or went on to its next transaction, without reporting Committed or Aborted: a prepare that failed in git (a stale old value, for example, in `update-ref` or a push), or a killed process. Each is also logged at INFO. |
 | `graft_storage_ref_dirty_repositories` | Repositories with reference writes not yet made durable. |
 | `graft_storage_ref_dirty_marked_total`, `graft_storage_ref_dirty_cleared_total` | Dirty markers written, and removed (the writes are durable, or the repository was moved aside, and no git process can still write it). |
 | `graft_storage_ref_writes_inflight` | git processes of this node that write references without fsync and have not exited; their repositories keep their markers. |

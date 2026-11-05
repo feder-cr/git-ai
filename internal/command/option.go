@@ -18,6 +18,7 @@ type config struct {
 	environment []string
 
 	finalizers []func(context.Context, *Command)
+	exitHooks  []func()
 
 	commandName    string
 	subcommandName string
@@ -133,6 +134,19 @@ func WithCgroup(cgroupsManager cgroups.Manager, opts ...cgroups.AddCommandOption
 func WithFinalizer(finalizer func(context.Context, *Command)) Option {
 	return func(cfg *config) {
 		cfg.finalizers = append(cfg.finalizers, finalizer)
+	}
+}
+
+// WithExitHook sets up a function to run when exec.Cmd.Wait has returned, however the process ended:
+// a normal exit, an error, a kill through the context, or a panic in the goroutine that reaps it.
+// exec.Cmd.Wait also waits for the goroutines that copy a standard stream which is not a file, so a
+// command whose stdin comes from a client takes it from DetachStdin: otherwise the hook waits for
+// the client to close its stream, long after the process exited. Unlike a finalizer it runs even when
+// the rest of the wrap-up panics. It does not run for a process that never started: New then returns
+// an error and the caller keeps the responsibility. It must not block.
+func WithExitHook(hook func()) Option {
+	return func(cfg *config) {
+		cfg.exitHooks = append(cfg.exitHooks, hook)
 	}
 }
 

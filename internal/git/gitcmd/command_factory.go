@@ -450,7 +450,7 @@ func (cf *ExecCommandFactory) GitVersion(ctx context.Context) (string, error) {
 // command will be run in the context of that repository. Note that this sets up arguments and
 // environment variables for git, but doesn't run in the directory itself. If a directory
 // is given, then the command will be run in that directory.
-func (cf *ExecCommandFactory) newCommand(ctx context.Context, repo storage.Repository, sc Command, opts ...CmdOpt) (*command.Command, error) {
+func (cf *ExecCommandFactory) newCommand(ctx context.Context, repo storage.Repository, sc Command, opts ...CmdOpt) (_ *command.Command, returnedErr error) {
 	// In Git change 2386535511, we introduced a feature, "attr: read attributes from HEAD when bare repo".
 	// This causes a performance degradation. Current workaround is to get rid of the default behavior
 	// in bare repos of reading from HEAD by setting attr.tree to empty tree.
@@ -587,10 +587,23 @@ func (cf *ExecCommandFactory) newCommand(ctx context.Context, repo storage.Repos
 		command.WithSubprocessLogger(cf.cfg.Logging.Config),
 	)
 
+	// The invocation lives as long as the process: the exit hook ends it however the process
+	// ends, and a process that did not start (New failed or panicked) ends it here. Ending an
+	// invocation twice does nothing.
+	endInvocation := BeginInvocation(config.invocation)
+	started := false
+	defer func() {
+		if !started {
+			endInvocation()
+		}
+	}()
+	commandOpts = append(commandOpts, command.WithExitHook(endInvocation))
+
 	command, err := command.New(ctx, cf.logger, append([]string{execEnv.BinaryPath}, args...), commandOpts...)
 	if err != nil {
 		return nil, err
 	}
+	started = true
 
 	return command, nil
 }

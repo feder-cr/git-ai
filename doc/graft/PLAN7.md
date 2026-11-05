@@ -652,9 +652,14 @@ repository-wide lock.
 
    Admission orders writers only; git's lock stays the only mutual exclusion. A
    writer that waited `reftable.lockTimeout` goes on to git's lock as before
-   (`bypassed`). An admission not released within the same bound ends
-   (`expired`; git may die between phases). A writer whose context ends leaves
-   the queue. Lock order: the syncer's repository lock, then the admission. No
+   (`bypassed`). A hook's admission belongs to the git process of the
+   transaction (`gitcmd.BeginInvocation`, by its invocation): git reports neither
+   Committed nor Aborted for a prepare that fails in `update-ref`, which dies, in
+   an atomic push, or for a killed process. So the process' end, or its next
+   transaction, releases the admission whatever git reported
+   (`released_unreported`). An admission not released within the same bound
+   ends (`expired`; a live process between phases). A writer whose context ends
+   or whose process ended leaves the queue. Lock order: the syncer's repository lock, then the admission. No
    admitted writer waits for the syncer lock: `NoteCommitted` only tries it, and
    runs after the release.
 2. *Deferred durability* (`corestore/localrefs.Durability`). The hook's

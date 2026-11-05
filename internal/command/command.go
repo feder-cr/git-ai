@@ -159,6 +159,8 @@ type Command struct {
 	processExitedCh      chan struct{}
 
 	finalizers []func(context.Context, *Command)
+	// exitHooks run when wait ends, see WithExitHook.
+	exitHooks []func()
 
 	span trace.Span
 
@@ -267,6 +269,7 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 		context:                  ctx,
 		span:                     span,
 		finalizers:               cfg.finalizers,
+		exitHooks:                cfg.exitHooks,
 		metricsCmd:               cfg.commandName,
 		metricsSubCmd:            cfg.subcommandName,
 		metricsService:           service,
@@ -605,6 +608,11 @@ func (c *Command) Wait() error {
 func (c *Command) wait() {
 	defer close(c.processExitedCh)
 	defer func() { <-c.subprocessLoggerDone }()
+	defer func() {
+		for _, hook := range c.exitHooks {
+			hook()
+		}
+	}()
 
 	c.teardownStandardStreams()
 	c.waitError = c.cmd.Wait()

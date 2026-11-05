@@ -804,6 +804,117 @@ func TestCommand_exitStatusReporting(t *testing.T) {
 	})
 }
 
+// TestCommand_withExitHook verifies that the exit hook runs once the process has been reaped, in
+// every way a process ends, and exactly once.
+func TestCommand_withExitHook(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a normal exit", func(t *testing.T) {
+		t.Parallel()
+
+		var calls atomic.Int32
+		cmd, err := New(testhelper.Context(t), testhelper.SharedLogger(t), []string{"true"}, WithExitHook(func() { calls.Add(1) }))
+		require.NoError(t, err)
+
+		require.NoError(t, cmd.Wait())
+		require.Equal(t, int32(1), calls.Load())
+
+		require.NoError(t, cmd.Wait())
+		require.Equal(t, int32(1), calls.Load())
+	})
+
+	t.Run("an exit with an error", func(t *testing.T) {
+		t.Parallel()
+
+		var calls atomic.Int32
+		cmd, err := New(testhelper.Context(t), testhelper.SharedLogger(t), []string{"false"}, WithExitHook(func() { calls.Add(1) }))
+		require.NoError(t, err)
+
+		require.Error(t, cmd.Wait())
+		require.Equal(t, int32(1), calls.Load())
+	})
+
+	t.Run("a kill through the context, without a caller that waits", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(testhelper.Context(t))
+		defer cancel()
+
+		ran := make(chan struct{})
+		_, err := New(ctx, testhelper.SharedLogger(t), []string{"cat"}, WithSetupStdin(), WithExitHook(func() { close(ran) }))
+		require.NoError(t, err)
+
+		select {
+		case <-ran:
+			require.FailNow(t, "the hook ran while the process was live")
+		default:
+		}
+
+		cancel()
+		<-ran
+	})
+
+	t.Run("a panic in the goroutine that waits", func(t *testing.T) {
+		t.Parallel()
+
+		var calls atomic.Int32
+		cmd, err := New(testhelper.Context(t), testhelper.SharedLogger(t), []string{"true"},
+			WithFinalizer(func(context.Context, *Command) { panic("the wrap-up panics") }),
+			WithExitHook(func() { calls.Add(1) }),
+		)
+		require.NoError(t, err)
+
+		require.Panics(t, func() { _ = cmd.Wait() })
+		require.Equal(t, int32(1), calls.Load())
+	})
+
+	t.Run("a process that does not start", func(t *testing.T) {
+		t.Parallel()
+
+		var calls atomic.Int32
+		_, err := New(testhelper.Context(t), testhelper.SharedLogger(t), []string{"/does/not/exist"}, WithExitHook(func() { calls.Add(1) }))
+		require.Error(t, err)
+		require.Zero(t, calls.Load(), "the caller owns a process that did not start")
+	})
+}
+
+// TestDetachStdin verifies that a command with a detached stdin ends when its process exits, while
+// the reader of the stdin has not ended, and that the copy runs its function when the reader ends.
+func TestDetachStdin(t *testing.T) {
+	t.Parallel()
+
+	reader, writer := io.Pipe()
+	defer writer.Close()
+
+	copied := make(chan struct{})
+	stdin, err := DetachStdin(reader, func() { close(copied) })
+	require.NoError(t, err)
+	defer stdin.Close()
+
+	var calls atomic.Int32
+	var stdout bytes.Buffer
+	// head exits after its first line, with its stdin open.
+	cmd, err := New(testhelper.Context(t), testhelper.SharedLogger(t), []string{"head", "-n1"},
+		WithStdin(stdin), WithStdout(&stdout), WithExitHook(func() { calls.Add(1) }))
+	require.NoError(t, err)
+
+	_, err = writer.Write([]byte("line\n"))
+	require.NoError(t, err)
+
+	require.NoError(t, cmd.Wait())
+	require.Equal(t, int32(1), calls.Load())
+	require.Equal(t, "line\n", stdout.String())
+
+	select {
+	case <-copied:
+		require.FailNow(t, "the copy ended while its reader was open")
+	default:
+	}
+
+	require.NoError(t, writer.Close())
+	<-copied
+}
+
 func TestCommand_withFinalizer(t *testing.T) {
 	t.Parallel()
 
