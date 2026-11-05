@@ -96,6 +96,11 @@ func TestUserCommitFilesProcessCount(t *testing.T) {
 			require.Empty(t, resp.GetPreReceiveError())
 			require.Equal(t, tc.repoCreated, resp.GetBranchUpdate().GetRepoCreated())
 
+			// The update reads which reference it writes (localrepo.WrittenReference). The files
+			// backend answers from the file of the reference; only git reads a reftable.
+			if testhelper.IsReftableEnabled() {
+				tc.expected["symbolic-ref"] = 1
+			}
 			require.Equal(t, tc.expected, counting.Counts())
 		})
 	}

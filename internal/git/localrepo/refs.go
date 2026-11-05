@@ -7,7 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/git"
@@ -15,6 +19,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
 	"github.com/feder-cr/git-ai/internal/git/updateref"
 	"github.com/feder-cr/git-ai/internal/gitaly/transaction"
+	"github.com/feder-cr/git-ai/internal/structerr"
 )
 
 // ErrMismatchingState is similar to updateref.MismatchingStateError. It's declared separately to avoid
@@ -201,6 +206,149 @@ func (repo *Repo) ResolveReferenceExactly(ctx context.Context, reference git.Ref
 	}
 
 	return git.ObjectID(value), nil
+}
+
+// WrittenReference returns the reference that an update of reference writes: for a symbolic
+// reference the end of its chain of targets, whether or not that exists, and otherwise reference
+// itself, also when it does not exist. The name is read exactly, with no DWIM rule. A name that is
+// not a valid reference is returned as it is: no update can write it, and git-update-ref(1) says why.
+//
+// A symbolic reference whose chain git does not follow to its end, a cycle or one of more hops than
+// git-symbolic-ref(1) takes, fails with FailedPrecondition. Its name is not what an update of it
+// writes, and no other name can be judged for it.
+//
+// An error says nothing of where the repository is on disk: it can reach the caller of an RPC.
+func (repo *Repo) WrittenReference(ctx context.Context, reference git.ReferenceName) (git.ReferenceName, error) {
+	if err := git.ValidateReference(reference.String()); err != nil {
+		return reference, nil //nolint:nilerr // No update can write it, and git-update-ref(1) says why.
+	}
+
+	mayBeSymbolic, err := repo.mayBeSymbolic(ctx, reference)
+	if err != nil {
+		return "", err
+	}
+	if !mayBeSymbolic {
+		return reference, nil
+	}
+
+	target, state, err := repo.symbolicTarget(ctx, reference, nil)
+	if err != nil {
+		return "", err
+	}
+	switch state {
+	case referenceIsSymbolic:
+		return target, nil
+	case referenceIsPlain:
+		return reference, nil
+	}
+
+	// git gave up on the name: one hop tells a chain it does not follow from a name it cannot read.
+	_, state, err = repo.symbolicTarget(ctx, reference, []gitcmd.Option{gitcmd.Flag{Name: "--no-recurse"}})
+	if err != nil {
+		return "", err
+	}
+	if state == referenceIsSymbolic {
+		return "", structerr.NewFailedPrecondition("%q is a cycle of symbolic references or a chain longer than git follows", reference)
+	}
+	return reference, nil
+}
+
+// referenceState is what git-symbolic-ref(1) says of a reference.
+type referenceState int
+
+const (
+	// referenceIsPlain is a reference that is not symbolic or that does not exist.
+	referenceIsPlain referenceState = iota
+	// referenceIsSymbolic is a symbolic reference that git read to a target.
+	referenceIsSymbolic
+	// referenceUnread is a name that git gave up reading.
+	referenceUnread
+)
+
+// symbolicTarget asks git-symbolic-ref(1) for the target of reference.
+func (repo *Repo) symbolicTarget(ctx context.Context, reference git.ReferenceName, flags []gitcmd.Option) (git.ReferenceName, referenceState, error) {
+	var stdout, stderr bytes.Buffer
+	err := repo.ExecAndWait(ctx, gitcmd.Command{
+		Name:  "symbolic-ref",
+		Flags: append([]gitcmd.Option{gitcmd.Flag{Name: "--quiet"}}, flags...),
+		Args:  []string{reference.String()},
+	},
+		// symbolic-ref is a reference-updating command for git, but this call only reads.
+		gitcmd.WithDisabledHooks(),
+		gitcmd.WithStdout(&stdout),
+		gitcmd.WithStderr(&stderr),
+	)
+	if err == nil {
+		return git.ReferenceName(strings.TrimSuffix(stdout.String(), "\n")), referenceIsSymbolic, nil
+	}
+
+	// With --quiet it exits 1 for a reference that is not symbolic or does not exist, and 128 with
+	// "No such ref" for one it cannot read as a reference.
+	code, exited := command.ExitStatus(err)
+	switch {
+	case exited && code == 1:
+		return "", referenceIsPlain, nil
+	case exited && code == 128 && strings.Contains(stderr.String(), "No such ref"):
+		return "", referenceUnread, nil
+	}
+
+	repo.logger.WithError(err).WithField("stderr", stderr.String()).ErrorContext(ctx, "reading a symbolic reference")
+	return "", referenceIsPlain, fmt.Errorf("reading symbolic reference %q failed", reference)
+}
+
+// mayBeSymbolic tells whether reference has to be asked of git to know if it is symbolic. Every write
+// of every RPC asks, nearly always of a plain branch, so the files backend answers without a process:
+// git never packs a symbolic reference, so one is a loose file that starts with "ref:", or a symbolic
+// link, which git reads as one when it points to a reference. The other backends are read by git only.
+// reference is a valid reference name, so it stays inside the repository as a path.
+func (repo *Repo) mayBeSymbolic(ctx context.Context, reference git.ReferenceName) (bool, error) {
+	backend, err := repo.ReferenceBackend(ctx)
+	if err != nil {
+		repo.logger.WithError(err).ErrorContext(ctx, "detecting the reference backend")
+		return false, errors.New("detecting the reference backend failed")
+	}
+	if backend.Name != git.ReferenceBackendFiles.Name {
+		return true, nil
+	}
+
+	repoPath, err := repo.Path(ctx)
+	if err != nil {
+		repo.logger.WithError(err).ErrorContext(ctx, "getting the repository path")
+		return false, errors.New("getting the repository path failed")
+	}
+	path := filepath.Join(repoPath, reference.String())
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, looseReferenceError(reference, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return true, nil
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false, looseReferenceError(reference, err)
+	}
+	return bytes.HasPrefix(content, []byte("ref:")), nil
+}
+
+// looseReferenceError returns what a failed read of the loose file of reference means: nothing, for
+// a reference that is packed or missing, a directory of references, or a name too long for the file
+// system, which git refuses when it writes it. Any other failure is returned with the cause alone,
+// as the path of a *fs.PathError would tell the caller where the repository is.
+func looseReferenceError(reference git.ReferenceName, err error) error {
+	for _, notALooseFile := range []error{os.ErrNotExist, syscall.ENOTDIR, syscall.EISDIR, syscall.ENAMETOOLONG} {
+		if errors.Is(err, notALooseFile) {
+			return nil
+		}
+	}
+
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		err = pathErr.Err
+	}
+	return fmt.Errorf("reading the loose reference %q: %w", reference, err)
 }
 
 // ReflogExists reports whether the reference named reference has a reflog, with `git reflog

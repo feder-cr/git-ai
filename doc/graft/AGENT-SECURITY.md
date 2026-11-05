@@ -166,21 +166,37 @@ layers that enforce it, in the order a request meets them:
    `PermissionDenied`. The other agent RPCs write branches, the review roots
    (`refs/keep-around/review/`) and, when opened with `agent_rpcs`, tags.
 4. The reference-transaction hook refuses every agent update under
-   `refs/graft/` while the references are locked, whatever reached it. It sees
-   the references git updates, so an update through a symbolic reference whose
-   target is under `refs/graft/` is refused too.
+   `refs/graft/` while the references are locked, whatever reached it. It is
+   told the references that are written, so an update through a symbolic
+   reference whose target is under `refs/graft/` is refused too. On a push git
+   tells it. The RPCs that run the hooks themselves (`UpdaterWithHooks`) read
+   the target first, tell every hook that name, and write exactly that reference
+   without following a symbolic reference again, so a reference retargeted
+   meanwhile does not change what was judged.
 
 `TestPolicyHoldsOnAgentPushes` in `internal/graft/e2e` pins layer 3 on a real
-push, and `TestPolicyHookDecidesForAgentUpdates` layer 4 alone (the real hook,
-run by `git update-ref` with the payload of an agent's write, a symbolic
-reference included), both in standalone mode and outside it. The pre-receive
-hook does not check the reservation: it judges the policy in standalone mode
-(GitLab's `/allowed` outside it), and it sees the names that were pushed, not
-what git will write. A push to `refs/heads/alias`, a symbolic reference to
-`refs/graft/x`, reaches it as `refs/heads/alias` and would write
-`refs/graft/x`; the reference-transaction hook, which sees `refs/graft/x`,
-refuses it. The combined update of a land batch, which runs without an agent
-identity, is held to the reservation by the hook as well.
+push, `TestPolicyHookDecidesForAgentUpdates` layer 4 alone (the real hook, run
+by `git update-ref` with the payload of an agent's write, a symbolic reference
+included), both in standalone mode and outside it, and
+`TestConformanceAgentWritesThroughSymbolicBranches` every way of writing a
+branch through a symbolic one. The pre-receive hook does not check the
+reservation: it judges the policy in standalone mode (GitLab's `/allowed`
+outside it). On a push it sees the names that were pushed, not what git will
+write: a push to `refs/heads/alias`, a symbolic reference to `refs/graft/x`,
+reaches it as `refs/heads/alias` and would write `refs/graft/x`; the
+reference-transaction hook, which sees `refs/graft/x`, refuses it. The combined
+update of a land batch, which runs without an agent identity, is held to the
+reservation by the hook as well.
+
+A denial of the reservation does not name the reference: an agent that wrote
+through a symbolic branch named something else, and the target may be hidden from
+it. The server's log has the name.
+
+Git's DWIM rules take `refs/tags/refs/heads/x` for `refs/heads/x` while that does
+not exist, so such a reference can answer for another one. Agents neither create
+nor update a reference under `refs/refs/`, `refs/tags/refs/`, `refs/heads/refs/` or
+`refs/remotes/refs/`, in every mode, by the same two last layers. They may delete
+one, so that an old one can be cleaned up. The shared token is not restricted.
 
 Every other RPC that is not on the allowlist (for example the other
 `OperationService` RPCs such as `UserMergeBranch`, or the other `SSHService`
@@ -209,6 +225,13 @@ pass-through. To allow it, list
 `/gitaly.SSHService/SSHReceivePack` (push). Pushes are still checked by the
 branch policy, but they bypass the `UserLand` path, its retries and its
 conflict resolution.
+
+Listing the fetch RPC does not make `gitaly-ssh` work for an agent. That tool
+is the server's own transport between Gitaly nodes: it adds
+`transfer.hideRefs=!refs` to every fetch so as to see every reference, and an
+agent's request with `git_config_options` is refused (`PermissionDenied`, see
+below). Pushes through `gitaly-ssh` work. The front end of an agent's fetch has
+to send `SSHUploadPackWithSidechannel` itself, without `git_config_options`.
 
 The test `TestAgentCannotCreateRepositoryFromSnapshot` and the phase-2
 allowlist test check this from the outside. An exhaustive table test checks
@@ -241,16 +264,22 @@ A denial by policy is a `PermissionDenied` error. Standalone denial messages
 do not start with `GitLab:`, so they are not mistaken for a GitLab hook
 rejection.
 
-Two known limits, accepted:
+A branch that is a symbolic reference is judged by the branch it points to,
+which is what an update writes, however the update comes. A rule that allows
+`refs/heads/alias` does not allow writing `refs/heads/main` through it. On a push
+the pre-receive hook also judges the name that was pushed. Creating a symbolic
+branch needs the rights of an operator. `UserLand` takes a symbolic branch for
+the branch it points to, in all it records, and refuses one that points to
+anything else. A cycle of symbolic references, or a chain longer than
+`git symbolic-ref` follows (more than four hops), is refused with
+`FailedPrecondition`, as it cannot be judged. `UserMergeToRef` and
+`UserRebaseToRef` refuse a symbolic `target_ref`.
 
-- A land with `resolve_conflicts` is checked against the standalone policy
-  before the resolver is called, so an actor the policy denies gets nothing
-  resolved. A shared-token caller whose GitLab user the GitLab pre-receive
-  check would deny is not stopped there: that check runs when the references
-  are updated, so the resolver is called, and the land is then refused.
-- A branch that is a symbolic reference is judged by its own name, not by the
-  name of the branch it points to. Creating a symbolic branch needs the rights
-  of an operator.
+One known limit, accepted: a land with `resolve_conflicts` is checked against
+the standalone policy before the resolver is called, so an actor the policy
+denies gets nothing resolved. A shared-token caller whose GitLab user the GitLab
+pre-receive check would deny is not stopped there: that check runs when the
+references are updated, so the resolver is called, and the land is then refused.
 
 ## Resolution and verification are opt-in
 

@@ -26,7 +26,9 @@ func (s *Server) UserRebaseToRef(ctx context.Context, request *gitalypb.UserReba
 	}
 	defer cleanup()
 
-	oid, err := quarantineRepo.ResolveRevision(ctx, git.Revision(request.GetFirstParentRef()))
+	// The first parent is read as a start point is: a missing refs/heads/x is missing, whatever
+	// reference git's DWIM rules would take for it.
+	oid, err := resolveStartBranchLocally(ctx, quarantineRepo, string(request.GetFirstParentRef()))
 	if err != nil {
 		return nil, structerr.NewInvalidArgument("invalid FirstParentRef")
 	}
@@ -34,6 +36,10 @@ func (s *Server) UserRebaseToRef(ctx context.Context, request *gitalypb.UserReba
 	sourceOID, err := quarantineRepo.ResolveRevision(ctx, git.Revision(request.GetSourceSha()))
 	if err != nil {
 		return nil, structerr.NewInvalidArgument("invalid SourceSha")
+	}
+
+	if err := refuseSymbolicTargetRef(ctx, quarantineRepo, request.GetTargetRef()); err != nil {
+		return nil, err
 	}
 
 	// Resolve the current state of the target reference. We do not care whether it
@@ -57,10 +63,6 @@ func (s *Server) UserRebaseToRef(ctx context.Context, request *gitalypb.UserReba
 				WithMetadata("old_object_id", expectedOldOID)
 		}
 	} else if targetRef, err := quarantineRepo.GetReference(ctx, git.ReferenceName(request.GetTargetRef())); err == nil {
-		if targetRef.IsSymbolic {
-			return nil, structerr.NewFailedPrecondition("target reference is symbolic: %q", request.GetTargetRef())
-		}
-
 		oid, err := objectHash.FromHex(targetRef.Target)
 		if err != nil {
 			return nil, structerr.NewInternal("invalid target revision: %w", err)

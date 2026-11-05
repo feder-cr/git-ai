@@ -41,14 +41,14 @@ func (s *Server) UserCreateBranch(ctx context.Context, req *gitalypb.UserCreateB
 	}
 	defer cleanup()
 
-	// BEGIN TODO: Uncomment if StartPoint started behaving sensibly
-	// like BranchName. See
-	// https://gitlab.com/gitlab-org/gitaly/-/issues/3331
-	//
-	// startPointReference, err := s.localrepo(req.GetRepository()).GetReference(ctx, "refs/heads/"+string(req.StartPoint))
-	// startPointCommit, err := log.GetCommit(ctx, req.Repository, startPointReference.Target)
-	startPointCommit, err := quarantineRepo.ReadCommit(ctx, git.Revision(req.GetStartPoint()))
-	// END TODO
+	// The start point is read by the rule of every start point: an existing branch beats a tag of
+	// the same name.
+	startPointOID, err := resolveStartBranchLocally(ctx, quarantineRepo, string(req.GetStartPoint()))
+	if err != nil {
+		return nil, structerr.NewFailedPrecondition("revspec '%s' not found", req.GetStartPoint())
+	}
+
+	startPointCommit, err := quarantineRepo.ReadCommit(ctx, startPointOID.Revision())
 	if err != nil {
 		return nil, structerr.NewFailedPrecondition("revspec '%s' not found", req.GetStartPoint())
 	}
@@ -56,11 +56,6 @@ func (s *Server) UserCreateBranch(ctx context.Context, req *gitalypb.UserCreateB
 	objectHash, err := quarantineRepo.ObjectHash(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("detecting object hash: %w", err)
-	}
-
-	startPointOID, err := objectHash.FromHex(startPointCommit.GetId())
-	if err != nil {
-		return nil, structerr.NewInvalidArgument("could not parse start point commit ID: %w", err)
 	}
 
 	referenceName := git.NewReferenceNameFromBranchName(string(req.GetBranchName()))

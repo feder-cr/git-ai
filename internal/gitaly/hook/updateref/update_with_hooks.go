@@ -180,7 +180,8 @@ func NewUpdaterWithHooks(
 // directory is given, then the pre-receive, update and reference-transaction hook will be invoked
 // with the quarantined repository as returned by the quarantine structure. If these hooks succeed,
 // quarantined objects will be migrated and all subsequent hooks are executed via the unquarantined
-// repository.
+// repository. The hooks see the reference that is written: the target of a symbolic reference, not
+// its name. An Error names the reference that was asked for.
 func (u *UpdaterWithHooks) UpdateReference(
 	ctx context.Context,
 	repoProto *gitalypb.Repository,
@@ -214,7 +215,21 @@ func (u *UpdaterWithHooks) UpdateReference(
 		return fmt.Errorf("validating new value: %w", err)
 	}
 
-	changes := fmt.Sprintf("%s %s %s\n", oldrev, newrev, reference)
+	// A symbolic reference is written through to its target. git tells the reference-transaction
+	// hook which reference it writes, but here that hook is driven by this function, so the name
+	// the hooks judge has to be the one written. The target is read once, and every hook and the
+	// update itself use it, with no dereference of their own: whatever the reference points to by
+	// then, what the hooks allowed is what is written.
+	written, err := repo.WrittenReference(ctx, reference)
+	if err != nil {
+		return fmt.Errorf("reading the reference to write: %w", err)
+	}
+
+	changes := fmt.Sprintf("%s %s %s\n", oldrev, newrev, written)
+
+	if err := hook.CheckAgentReservation(ctx, changes); err != nil {
+		return err
+	}
 
 	receiveHooksPayload := gitcmd.UserDetails{
 		UserID:   user.GetGlId(),
@@ -279,7 +294,7 @@ func (u *UpdaterWithHooks) UpdateReference(
 		}
 	}
 
-	if err := u.hookManager.UpdateHook(ctx, quarantinedRepo, reference.String(), oldrev.String(), newrev.String(), []string{hooksPayload}, &stdout, &stderr); err != nil {
+	if err := u.hookManager.UpdateHook(ctx, quarantinedRepo, written.String(), oldrev.String(), newrev.String(), []string{hooksPayload}, &stdout, &stderr); err != nil {
 		return fmt.Errorf("running update hooks: %w", wrapHookError(err, gitcmd.UpdateHook, stdout.String(), stderr.String()))
 	}
 
@@ -293,7 +308,7 @@ func (u *UpdaterWithHooks) UpdateReference(
 	// is packed, which is obviously a bad thing as Gitaly nodes may be differently packed. We
 	// thus continue to manually drive the reference-transaction hook here, which doesn't have
 	// this problem.
-	updaterOpts := []updateref.UpdaterOpt{updateref.WithDisabledTransactions()}
+	updaterOpts := []updateref.UpdaterOpt{updateref.WithDisabledTransactions(), updateref.WithNoDeref()}
 	// The storage core's authoritative mode makes the references durable itself: its database
 	// commit in the prepared phase is the durable point of the transaction. It counts the
 	// update-ref process as writing without fsync until the process has exited (end runs after
@@ -315,7 +330,7 @@ func (u *UpdaterWithHooks) UpdateReference(
 		return fmt.Errorf("start reference transaction: %w", err)
 	}
 
-	if err := updater.Update(reference, newrev, oldrev); err != nil {
+	if err := updater.Update(written, newrev, oldrev); err != nil {
 		return fmt.Errorf("queueing ref update: %w", err)
 	}
 
