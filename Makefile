@@ -236,6 +236,12 @@ GIT_FILTER_REPO_SOURCE_DIR           ?= ${DEPENDENCY_DIR}/git-filter-repo
 TEST_PACKAGES     ?= ./...
 ## Test options passed to `go test`.
 TEST_OPTIONS      ?= -count=1 -p=4
+## Timeout of `go test` for the conformance harness (internal/graft/conformance), which CI runs in a
+## step of its own, alone on the runner. It runs about 1350 subtests against real gitai servers in six
+## modes, git http-backend and stock git clients: about 330 s on 4 CPUs and 530 s on 2 (measured with
+## taskset on a development machine), CPU-bound, so it grows as the CPUs it gets shrink; 30m leaves about
+## 3x the slower figure for a slower runner. Go's default of 10m stays the bound of every other package.
+CONFORMANCE_TEST_TIMEOUT ?= 30m
 ## Specify the output format used to print tests ["standard-verbose", "standard-quiet", "short"]
 TEST_FORMAT       ?= short
 ## Specify the location where the JUnit-style format shall be written to.
@@ -448,7 +454,7 @@ test-go: prepare-tests ${GOCOVER_COBERTURA}
 ## Run the conformance harness: stock git clients against git http-backend and gitai in each mode,
 ## and the RPC tables, with the decoy tests of the operations service that it reuses.
 test-conformance: TEST_PACKAGES := ./internal/graft/conformance ./internal/gitaly/service/operations
-test-conformance: TEST_OPTIONS := -count=1 -run '^(TestConformance.*|Test.*ResolvesBranchesExactly|Test.*ResolvesStartRepositoryBranchesExactly|TestStartBranchResolvesTheBranchFirst|TestStartBranchLocalAndRemoteAgree)$$'
+test-conformance: TEST_OPTIONS := -count=1 -timeout=${CONFORMANCE_TEST_TIMEOUT} -run '^(TestConformance.*|Test.*ResolvesBranchesExactly|Test.*ResolvesStartRepositoryBranchesExactly|TestStartBranchResolvesTheBranchFirst|TestStartBranchLocalAndRemoteAgree)$$'
 test-conformance: prepare-tests
 	${Q}$(call run_go_tests)
 

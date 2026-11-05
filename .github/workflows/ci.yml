@@ -78,7 +78,8 @@ jobs:
             git)            pkgs=$(go list ./internal/git/...) ;;
             gitaly-service) pkgs=$(go list ./internal/gitaly/service/...) ;;
             gitaly-other)   pkgs=$(go list ./internal/gitaly/... | grep -v '/internal/gitaly/service/') ;;
-            graft)          pkgs=$(go list ./internal/graft/... ./cmd/... ./sdk/...) ;;
+            # The conformance harness runs in the step below, alone.
+            graft)          pkgs=$(go list ./internal/graft/... ./cmd/... ./sdk/... | grep -v '/internal/graft/conformance$') ;;
             other)          pkgs=$(go list ./... | grep -v -E '/internal/(git|gitaly|graft)(/|$)|/cmd/|/sdk(/|$)') ;;
           esac
           # RewriteHistory runs git-filter-repo from PATH, as in production.
@@ -90,13 +91,26 @@ jobs:
           make test-go TEST_PACKAGES="$(echo $pkgs)" \
             TEST_JSON_REPORT="$RUNNER_TEMP/tests.json" TEST_RERUN_REPORT="$RUNNER_TEMP/reruns.txt"
 
+      # The conformance harness is one package of about 1350 subtests against real servers, CPU-bound:
+      # next to three other test binaries (-p=4) it overran Go's default timeout of 10m. Alone it gets
+      # the runner's CPUs and its own bound, CONFORMANCE_TEST_TIMEOUT of the Makefile (single quotes:
+      # make expands it). Every test of the package runs, as in the step above.
+      - name: Test (conformance)
+        if: matrix.group == 'graft' && !cancelled()
+        run: |
+          make test-go TEST_PACKAGES=./internal/graft/conformance \
+            TEST_OPTIONS='-count=1 -timeout=$(CONFORMANCE_TEST_TIMEOUT)' \
+            TEST_JSON_REPORT="$RUNNER_TEMP/tests-conformance.json" TEST_RERUN_REPORT="$RUNNER_TEMP/reruns-conformance.txt"
+
       # gotestsum re-runs failed tests; one that then passes leaves the job
       # green. List the re-run tests on the run page and keep the output of
       # every attempt as an artifact.
       - name: Re-run report
         id: reruns
         if: always()
-        run: bash .github/scripts/rerun-report.sh "$RUNNER_TEMP/reruns.txt" "test (${{ matrix.group }})"
+        run: |
+          bash .github/scripts/rerun-report.sh "$RUNNER_TEMP/reruns.txt" "test (${{ matrix.group }})"
+          bash .github/scripts/rerun-report.sh "$RUNNER_TEMP/reruns-conformance.txt" "test (${{ matrix.group }}, conformance)"
 
       - name: Upload the test output of re-run tests
         if: always() && steps.reruns.outputs.reruns == 'true'
@@ -106,6 +120,8 @@ jobs:
           path: |
             ${{ runner.temp }}/tests.json
             ${{ runner.temp }}/reruns.txt
+            ${{ runner.temp }}/tests-conformance.json
+            ${{ runner.temp }}/reruns-conformance.txt
           retention-days: 14
 
   # The Git, service and storage packages again with the reftable reference
