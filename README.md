@@ -172,3 +172,12 @@ are refused when you switch the storage core to authoritative mode
 of upstream Gitaly is not part of this repository. Gitaly's own README is kept in
 [doc/upstream/README-GITALY.md](doc/upstream/README-GITALY.md), and third-party notices are in
 [NOTICE](NOTICE).
+
+The build also downloads Git itself, at the revisions pinned by the
+`GIT_VERSION*` variables of the [Makefile](Makefile), and compiles it into the
+bundled executables that the server runs as external programs. Git is
+GPL-2.0-only and stays GPL-2.0-only: the server shares no code with it and
+invokes it as a separate process, so the MIT license above covers everything in
+this repository except the bundled Git, whose sources carry their own license
+terms (see the COPYING file of the Git sources, and [LICENSE](LICENSE)). The
+pinned revisions reproduce the exact sources of any distributed executable.
