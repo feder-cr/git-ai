@@ -259,7 +259,10 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 			attribute.String("args", strings.Join(nameAndArgs[1:], " ")),
 		},
 	)
-	cmd := exec.CommandContext(ctx, nameAndArgs[0], nameAndArgs[1:]...)
+	// Not exec.CommandContext: it sends SIGKILL when ctx is done, and a git that dies that way leaves
+	// its reference lock behind (see the check above). The goroutine at the end of this function
+	// ends the process when ctx is done, with SIGTERM to its process group.
+	cmd := exec.Command(nameAndArgs[0], nameAndArgs[1:]...)
 	service, method := methodFromContext(ctx)
 
 	command := &Command{

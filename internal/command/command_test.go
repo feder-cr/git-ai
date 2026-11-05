@@ -704,16 +704,12 @@ func TestCommand_exitStatusReporting(t *testing.T) {
 		_, ok := ExitStatus(waitErr)
 		require.False(t, ok)
 
-		// The reporting on the other hand knows that we have signalled the process.
-		// Which signal killed it is racy: `exec.CommandContext()` kills the process with
-		// SIGKILL when the context is done, while our own teardown sends SIGTERM to its
-		// process group. Either way we must report the signal that won the race.
+		// The reporting on the other hand knows that we have signalled the process, with
+		// SIGTERM: a process that gets SIGKILL cannot clean up, and git would leave its
+		// reference lock behind.
 		entry := spawnCompleteEntry(t, hook)
 		require.Equal(t, -1, entry.Data["command.exitCode"])
-		require.Contains(t,
-			[]string{syscall.SIGTERM.String(), syscall.SIGKILL.String()},
-			entry.Data["command.signal"],
-		)
+		require.Equal(t, syscall.SIGTERM.String(), entry.Data["command.signal"])
 	})
 
 	t.Run("stderr is non-empty but context was cancelled by us", func(t *testing.T) {
