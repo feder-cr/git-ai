@@ -363,20 +363,31 @@ func (v *Voter) shadowFailed(ctx context.Context, err error) {
 // again. The caller decides whether the client may see the name it returns.
 //
 // A repository the database does not track, or whose import is not complete,
-// has nothing to conflict with. A failed read is returned as Unavailable in
-// authoritative mode; in shadow mode it is logged and counted as a shadow error,
-// and the push proceeds.
+// has nothing to conflict with. A failed read is returned as Unavailable.
+//
+// Shadow mode never refuses a git write: git's references are the truth there,
+// and the database may be behind them. A conflict, or a failed read, is logged and
+// counted as a shadow error, and "" is returned. The commit of the changeset
+// then refuses to record the name (forced or not), so the database never holds a
+// pair, and verification reports what it misses.
 func (v *Voter) CreatedRefConflict(ctx context.Context, repo *gitalypb.Repository, ref string) (string, error) {
 	if v == nil || !v.core.Enabled() || repo == nil {
 		return "", nil
 	}
 
 	existing, err := v.createdRefConflict(ctx, repo, ref)
-	if err != nil {
-		if !v.core.Authoritative() {
+	if !v.core.Authoritative() {
+		switch {
+		case err != nil:
 			v.shadowFailed(ctx, fmt.Errorf("check the name of a created reference: %w", err))
-			return "", nil
+		case existing != "":
+			v.metrics.shadowErrors.Inc()
+			v.logger.WithFields(log.Fields{"reference": ref, "conflicts_with": existing}).WarnContext(ctx,
+				"storage core: shadow write creates a reference git cannot hold next to one of the database, the git write proceeds")
 		}
+		return "", nil
+	}
+	if err != nil {
 		return "", v.unavailable(err)
 	}
 	return existing, nil

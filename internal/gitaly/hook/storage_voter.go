@@ -10,6 +10,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/git/updateref"
 	"github.com/feder-cr/git-ai/internal/graft/agentrefs"
 	"github.com/feder-cr/git-ai/internal/graft/changelog"
+	"github.com/feder-cr/git-ai/internal/graft/displaytext"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
 
@@ -163,10 +164,11 @@ func agentWriter(env []string) bool {
 
 // RefNameConflictMessage is the line that tells a client why the storage core refused a
 // reference: git cannot hold it next to another one, which the database holds or the same
-// write creates.
+// write creates. The names come from other clients, so they are shown as displaytext.Text
+// shows them: no control, format or bidirectional character reaches the terminal as it is.
 func RefNameConflictMessage(conflict updateref.FileDirectoryConflictError) string {
 	return fmt.Sprintf("refusing %s: git cannot hold it next to %s; push the other references without it",
-		conflict.ConflictingReferenceName, conflict.ExistingReferenceName)
+		displaytext.Text(conflict.ConflictingReferenceName), displaytext.Text(conflict.ExistingReferenceName))
 }
 
 // changelogMetaOf is the changelog metadata of a transaction, shared by the

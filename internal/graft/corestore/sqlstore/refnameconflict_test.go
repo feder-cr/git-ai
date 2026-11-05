@@ -380,32 +380,68 @@ func TestRefNameConflictProbeUsesThePrimaryKey(t *testing.T) {
 		_, err = s.DB().ExecContext(ctx, "ANALYZE graft_refs")
 		require.NoError(t, err)
 
-		lower, upper := sqlstore.RefChildrenRange("refs/heads/a")
-		planRows, err := s.DB().QueryContext(ctx, explain+s.Bind(sqlstore.FirstRefInRangeQuery), repo.ID, lower, upper)
-		require.NoError(t, err)
-		defer planRows.Close()
-
-		columns, err := planRows.Columns()
-		require.NoError(t, err)
-
-		var plan strings.Builder
-		for planRows.Next() {
-			values := make([]any, len(columns))
-			for i := range values {
-				values[i] = new(any)
+		planOf := func(query string, names ...string) string {
+			args := []any{repo.ID}
+			for _, name := range names {
+				lower, upper := sqlstore.RefChildrenRange(name)
+				args = append(args, lower, upper)
 			}
-			require.NoError(t, planRows.Scan(values...))
-			fmt.Fprintln(&plan, *(values[len(values)-1].(*any)))
-		}
-		require.NoError(t, planRows.Err())
+			planRows, err := s.DB().QueryContext(ctx, explain+s.Bind(query), args...)
+			require.NoError(t, err)
+			defer planRows.Close()
 
-		if s.Dialect() == sqlstore.SQLite {
-			require.Contains(t, plan.String(), "SEARCH graft_refs USING", "plan: %s", plan.String())
-			require.Contains(t, plan.String(), "name>? AND name<?", "plan: %s", plan.String())
-			return
+			columns, err := planRows.Columns()
+			require.NoError(t, err)
+
+			var plan strings.Builder
+			for planRows.Next() {
+				values := make([]any, len(columns))
+				for i := range values {
+					values[i] = new(any)
+				}
+				require.NoError(t, planRows.Scan(values...))
+				fmt.Fprintln(&plan, *(values[len(values)-1].(*any)))
+			}
+			require.NoError(t, planRows.Err())
+			return plan.String()
 		}
-		require.Contains(t, plan.String(), "Index", "plan: %s", plan.String())
-		require.NotContains(t, plan.String(), "Seq Scan", "plan: %s", plan.String())
+
+		// The probe of one name (the update hook), and the query of the names a changeset creates.
+		for desc, plan := range map[string]string{
+			"one name":   planOf(sqlstore.FirstRefInRangeQuery, "refs/heads/a"),
+			"many names": planOf(sqlstore.RefInRangesQuery(3), "refs/heads/a", "refs/heads/c", "refs/heads/z"),
+		} {
+			if s.Dialect() == sqlstore.SQLite {
+				require.Contains(t, plan, "SEARCH graft_refs USING", "%s: %s", desc, plan)
+				require.Contains(t, plan, "name>? AND name<?", "%s: %s", desc, plan)
+				require.NotContains(t, plan, "SCAN graft_refs", "%s: %s", desc, plan)
+				continue
+			}
+			require.Contains(t, plan, "Index", "%s: %s", desc, plan)
+			require.NotContains(t, plan, "Seq Scan", "%s: %s", desc, plan)
+		}
+	})
+}
+
+// TestCommitChangesetRefusesRefNameConflictsAmongMany creates many references in one changeset,
+// more than one query of the ranges below them holds, one of which conflicts with a reference
+// of the database: the commit names that one.
+func TestCommitChangesetRefusesRefNameConflictsAmongMany(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, ctx context.Context, s *sqlstore.Store) {
+		repo := register(t, ctx, s, testKey("r"))
+		_, err := commit(ctx, s, repo.ID, create("refs/heads/many/1100/x", oid(1)))
+		require.NoError(t, err)
+
+		var updates []corestore.RefUpdate
+		for i := 0; i < 1200; i++ {
+			updates = append(updates, create(fmt.Sprintf("refs/heads/many/%04d", i), oid(2)))
+		}
+		_, err = commit(ctx, s, repo.ID, updates...)
+		requireNameConflict(t, err, "refs/heads/many/1100", "refs/heads/many/1100/x")
+		requireRefs(t, ctx, s, repo.ID, map[string]corestore.Target{"refs/heads/many/1100/x": oid(1)})
+
+		_, err = commit(ctx, s, repo.ID, append(updates[:1100:1100], updates[1101:]...)...)
+		require.NoError(t, err)
 	})
 }
 

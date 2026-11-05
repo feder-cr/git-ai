@@ -98,6 +98,15 @@ func TestUpdateHook_storageRefNameConflict(t *testing.T) {
 		})
 	}
 
+	t.Run("names are shown as text", func(t *testing.T) {
+		voter := &conflictVoter{existing: "refs/heads/x\u202eb"}
+		var stdout, stderr bytes.Buffer
+		err := managerOf(voter).UpdateHook(ctx, repo, "refs/heads/x\u202eb/\x1bc", zero, oid, envOf(t, false), &stdout, &stderr)
+		var conflict updateref.FileDirectoryConflictError
+		require.True(t, errors.As(err, &conflict), "error: %v", err)
+		require.Equal(t, `refusing refs/heads/x\u202eb/\x1bc: git cannot hold it next to refs/heads/x\u202eb; push the other references without it`+"\n", stderr.String())
+	})
+
 	t.Run("updates and deletions read nothing", func(t *testing.T) {
 		voter := &conflictVoter{existing: "refs/heads/a"}
 		manager := managerOf(voter)

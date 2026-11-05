@@ -598,7 +598,8 @@ or re-import the repository from scratch (see
   database refuses, in its commit, a changeset that would leave such a pair
   (also forced, so also in shadow mode), so the repository stays something
   every node can apply. A database that holds a pair already is repaired as
-  the next item says. What a client sees, in shadow and authoritative mode:
+  the next item says. What a client sees in authoritative mode (shadow mode,
+  below, never refuses a git write):
   - **A push** (SSH or smart HTTP, with or without `--atomic`): the update
     hook, which git runs for each reference before its transaction, refuses a
     new reference that conflicts with a reference of the database. The client
@@ -608,10 +609,11 @@ or re-import the repository from scratch (see
     `(refname conflict)`. Without `--atomic` the other references of the push
     land as usual. A name the pusher may not see is not named: an agent reads
     `a reference hidden from you` instead (in practice receive-pack already
-    refuses such names with `deny updating a hidden ref`).
+    refuses such names with `deny updating a hidden ref`). Names are shown
+    with control, format and bidirectional characters escaped (`\u202e`).
   - **A push that creates both names of a pair**, such as `refs/heads/a` and
-    `refs/heads/a/b` in one push without `--atomic`, is refused as a whole in
-    authoritative mode. The update hook cannot see the conflict, since each
+    `refs/heads/a/b` in one push without `--atomic`, is refused as a whole.
+    The update hook cannot see the conflict, since each
     name conflicts only with the other. git refuses one of the two names, but
     still hands both to the reference-transaction hook (a known git behaviour
     this release does not work around), and the database refuses that
@@ -622,25 +624,36 @@ or re-import the repository from scratch (see
     only sees `fatal: the remote end hung up unexpectedly`. Push the names
     separately; one of them git cannot hold in any case. The same happens when
     another node commits the conflicting name between this push's update hook
-    and its commit. In shadow mode the push behaves as on a plain git server,
-    but the database records none of its references: `graft storage verify`
-    reports the one git wrote, and its next write records it.
+    and its commit.
   - Where the server drives the reference transaction, the code of git's own
     refusal: `FailedPrecondition` from `UserCreateBranch` and `UserCommitFiles`,
     for example. Through a git process that the server runs without a push,
     `Internal` (`UpdateReferences`), as for git's own such conflict.
-  A shadow write the database refuses proceeds unrecorded: it counts in
-  `graft_storage_shadow_errors_total`, and verification reports the difference.
-  A shadow write is never refused for a failed read of the database either: the
-  update hook logs it, counts it as a shadow error and lets git proceed. In
-  authoritative mode such a read failure refuses the reference with
-  `Unavailable`, as any write needs the database.
+  - If the update hook cannot read the database, it refuses the reference
+    (`hook declined`), as any write needs the database in this mode.
+
+  **Shadow mode never refuses a git write because of the database**, which may
+  be behind git there. A push behaves as on a plain git server: git refuses a
+  name only when it conflicts with the node's own copy. The update hook logs a
+  name that conflicts with a reference of the database and counts it in
+  `graft_storage_shadow_errors_total`, and so does a failed read. The database
+  still refuses to record a changeset that would leave a pair (it is forced,
+  but this check holds), so it records none of the references of such a push,
+  and none of a non-atomic push in which git refused a conflicting name (git
+  hands the hook the refused name too). `graft storage verify` reports the
+  references the database misses; the next write of each records it.
+
   Cost: an update or deletion of an existing reference reads nothing more. The
-  commit of each created reference adds one primary key range probe of at most
-  one row, and the parent names of the created references one primary key
-  lookup per 500 names. A push's update hook adds, per created reference, a
-  read of the repository's row, one primary key lookup of its parent names and
-  one range probe, in a read transaction of its own.
+  commit of a changeset that creates references adds one primary key lookup of
+  their parent names and one primary key range query of the names below them,
+  each per 500 created names, in the commit's transaction. **Known limit:** a
+  push's update hook adds, for each reference it creates, a read of the
+  repository's row, one primary key lookup of the parent names and one range
+  probe, each in a read transaction of its own: measured at about 0.04 ms on
+  SQLite and 2.0–2.5 ms on Postgres per created reference
+  (`BenchmarkRefNameCheck`, local Postgres in Docker), so a push that creates
+  1,000 references spends about 2–3 s more in its update hooks on Postgres, more
+  over a network.
 - **A repository removed on another node.** The local copy has a watermark
   whose key the database no longer has; it is moved into the storage's
   temporary directory, and the repository is reported missing on that node too.

@@ -74,5 +74,8 @@ const FirstRefInRangeQuery = firstRefInRangeQuery
 // RefChildrenRange returns the range of the names below the reference name.
 var RefChildrenRange = refChildrenRange
 
+// RefInRangesQuery is the range query of the references a changeset creates.
+var RefInRangesQuery = refInRangesQuery
+
 // Bind rewrites the placeholders of a query for the dialect of s.
 func (s *Store) Bind(query string) string { return s.bind(query) }

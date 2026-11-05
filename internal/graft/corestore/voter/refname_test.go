@@ -67,7 +67,8 @@ func (failingConflictRead) ConflictingRef(context.Context, int64, string) (strin
 
 // TestCreatedRefConflict covers the check of the update hook: the name the database holds, in
 // both directions; nothing for a repository the database does not track or whose import is not
-// complete; and a failed read, which refuses in authoritative mode only.
+// complete; and a failed read, which refuses in authoritative mode only. Shadow mode refuses
+// nothing, and counts the conflicts.
 func TestCreatedRefConflict(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, dialect sqlstore.Dialect) {
 		for _, mode := range []corestore.Mode{corestore.ModeAuthoritative, corestore.ModeShadow} {
@@ -76,6 +77,7 @@ func TestCreatedRefConflict(t *testing.T) {
 				f.seed(t, "refs/heads/a", corestore.Target(f.b.String()))
 				f.seed(t, "refs/heads/x/y", corestore.Target(f.b.String()))
 
+				shadow := mode == corestore.ModeShadow
 				for ref, want := range map[string]string{
 					"refs/heads/a/b":   "refs/heads/a",
 					"refs/heads/a/b/c": "refs/heads/a",
@@ -86,17 +88,25 @@ func TestCreatedRefConflict(t *testing.T) {
 				} {
 					got, err := f.voter.CreatedRefConflict(f.ctx, f.repo, ref)
 					require.NoError(t, err)
+					if shadow {
+						// Shadow mode never refuses a git write: it counts the conflict only.
+						want = ""
+					}
 					require.Equal(t, want, got, ref)
+				}
+				if shadow {
+					require.Equal(t, float64(3), metricValue(t, f.voter, "graft_storage_shadow_errors_total", nil))
 				}
 
 				f.core.Meta = failingConflictRead{f.core.Meta}
-				_, err := f.voter.CreatedRefConflict(f.ctx, f.repo, "refs/heads/a/b")
-				if mode == corestore.ModeAuthoritative {
+				got, err := f.voter.CreatedRefConflict(f.ctx, f.repo, "refs/heads/a/b")
+				if !shadow {
 					require.Equal(t, codes.Unavailable, status.Code(err), "error: %v", err)
 					return
 				}
 				require.NoError(t, err, "shadow mode never refuses a git write")
-				require.Equal(t, float64(1), metricValue(t, f.voter, "graft_storage_shadow_errors_total", nil))
+				require.Empty(t, got)
+				require.Equal(t, float64(4), metricValue(t, f.voter, "graft_storage_shadow_errors_total", nil))
 			})
 		}
 

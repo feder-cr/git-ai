@@ -138,10 +138,10 @@ func pushOver(t *testing.T, c staleCreateClient, transport, httpURL string, refs
 }
 
 // TestStoragePushRefusesConflictingNameAlone pushes, without --atomic, a branch that git cannot
-// hold next to a branch of the database, with a branch that conflicts with nothing. The update
-// hook refuses the conflicting branch alone, with the reason on the client's terminal, over SSH
-// and over smart HTTP; the other branch lands, and the database records it, in authoritative and
-// in shadow mode.
+// hold next to a branch of the database, with a branch that conflicts with nothing. In
+// authoritative mode the update hook refuses the conflicting branch alone, with the reason on the
+// client's terminal, over SSH and over smart HTTP; the other branch lands, and the database records
+// it. In shadow mode the push goes through as on a plain git server.
 func TestStoragePushRefusesConflictingNameAlone(t *testing.T) {
 	t.Parallel()
 
@@ -169,6 +169,38 @@ func TestStoragePushRefusesConflictingNameAlone(t *testing.T) {
 					}
 
 					pushed := client.commit("pushed.txt")
+
+					if mode == corestore.ModeShadow {
+						// Shadow mode never declines a git write because of the database, which
+						// may be behind git: a name only the database holds does not stop the
+						// push. The database records none of it, and verification says so.
+						_, err := a.core.Meta.CommitChangeset(a.ctx, corestore.ChangesetInput{
+							RepoID:    a.record(t, rel).ID,
+							Updates:   []corestore.RefUpdate{{Name: "refs/heads/dbonly", Expect: corestore.ExpectValue, New: corestore.Target(base)}},
+							Operation: "test", Actor: "tester", NodeID: "node-x",
+						})
+						require.NoError(t, err)
+
+						out, ok = pushOver(t, client, transport, httpURL, "HEAD:refs/heads/dbonly/below", "HEAD:refs/heads/unrelated")
+						require.True(t, ok, out)
+						require.NotContains(t, out, "refusing")
+						local := a.localRefs(t, rel)
+						require.Equal(t, corestore.Target(pushed), local["refs/heads/dbonly/below"])
+						require.Equal(t, corestore.Target(pushed), local["refs/heads/unrelated"])
+						db := a.dbRefs(t, rel)
+						require.NotContains(t, db, "refs/heads/dbonly/below")
+						require.NotContains(t, db, "refs/heads/unrelated")
+
+						verified, err := a.operator(t, rel).StorageVerify(a.ctx, false)
+						require.NoError(t, err)
+						var diverged []string
+						for _, d := range verified.Divergences {
+							diverged = append(diverged, d.Reference)
+						}
+						require.ElementsMatch(t, []string{"refs/heads/dbonly", "refs/heads/dbonly/below", "refs/heads/unrelated"}, diverged)
+						return
+					}
+
 					out, ok = pushOver(t, client, transport, httpURL, "HEAD:refs/heads/existing/below", "HEAD:refs/heads/unrelated")
 
 					require.False(t, ok, "one reference is refused: %s", out)
@@ -181,9 +213,7 @@ func TestStoragePushRefusesConflictingNameAlone(t *testing.T) {
 					require.NotContains(t, db, "refs/heads/existing/below")
 					require.Equal(t, corestore.Target(pushed), db["refs/heads/unrelated"], "the other reference lands and is recorded")
 					require.Equal(t, db, a.localRefs(t, rel))
-					if mode == corestore.ModeAuthoritative {
-						a.requireConsistent(t, rel)
-					}
+					a.requireConsistent(t, rel)
 				})
 			})
 		}

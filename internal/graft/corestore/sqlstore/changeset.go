@@ -260,11 +260,13 @@ func (s *Store) commitChangeset(ctx context.Context, tx *sql.Tx, repo *repoState
 //
 // A reference that already exists is not checked, whatever its value changes
 // to: an update or a deletion creates no new name, and updates of existing
-// references, the common case (a land), cost no query here. Each created
-// reference costs one primary key range probe that reads at most one row; the
-// parent names of the created references, deduplicated, are read together, in
-// one primary key lookup per maxNamesPerQuery names. Neither reads the other
-// references of the repository.
+// references, the common case (a land), cost no query here. The parent names of
+// the created references, deduplicated, are read together, in one primary key
+// lookup per maxNamesPerQuery names, and the ranges below the created references
+// in one primary key range query per maxNamesPerQuery names that reads at most
+// one row. Neither reads the other references of the repository, and a push that
+// creates many references holds the lock of the repository for a few statements
+// more, not one per reference.
 func (s *Store) refuseRefNameConflicts(ctx context.Context, tx *sql.Tx, repoID int64, updates []corestore.AppliedUpdate) error {
 	var created, parents []string
 	seen := map[string]struct{}{}
@@ -292,17 +294,52 @@ func (s *Store) refuseRefNameConflicts(ctx context.Context, tx *sql.Tx, repoID i
 				return &corestore.ErrRefNameConflict{Name: name, Existing: parent}
 			}
 		}
+	}
 
-		child, found, err := s.firstRefBelow(ctx, tx, repoID, name)
-		if err != nil {
-			return err
+	for start := 0; start < len(created); start += maxNamesPerQuery {
+		chunk := created[start:min(start+maxNamesPerQuery, len(created))]
+		args := make([]any, 0, 1+2*len(chunk))
+		args = append(args, repoID)
+		for _, name := range chunk {
+			lower, upper := refChildrenRange(name)
+			args = append(args, lower, upper)
 		}
-		if found {
-			return &corestore.ErrRefNameConflict{Name: name, Existing: child}
+
+		var child []byte
+		err := tx.QueryRowContext(ctx, s.bind(refInRangesQuery(len(chunk))), args...).Scan(&child)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		case err != nil:
+			return fmt.Errorf("read the references below the created references: %w", err)
 		}
+		for _, name := range chunk {
+			if strings.HasPrefix(string(child), name+"/") {
+				return &corestore.ErrRefNameConflict{Name: name, Existing: string(child)}
+			}
+		}
+		return fmt.Errorf("storage core: reference %q is below none of the created references", child)
 	}
 
 	return nil
+}
+
+// refInRangesQuery returns a reference of a repository in any of n ranges of
+// names, which are bound after the repository as lower and upper bound of each
+// range. Each range is on the primary key (repo_id, name). There is no ORDER BY:
+// any reference in a range is a conflict, and an order would let a planner walk
+// the whole primary key of the repository instead of the ranges.
+func refInRangesQuery(n int) string {
+	var b strings.Builder
+	b.WriteString("SELECT name FROM graft_refs WHERE repo_id = ? AND (")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(" OR ")
+		}
+		b.WriteString("(name >= ? AND name < ?)")
+	}
+	b.WriteString(") LIMIT 1")
+	return b.String()
 }
 
 // firstRefBelow returns the first reference of the repository below the

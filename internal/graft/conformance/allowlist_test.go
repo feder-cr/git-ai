@@ -82,10 +82,10 @@ var allowedDifferences = []allowedDifference{
 		},
 	},
 
-	// The storage core refuses, in the update hook, a reference that git cannot hold next to one the
-	// database holds. receive-pack reports it as a hook's refusal, with the reason on a remote: line,
-	// where stock git reports its own refusal of the name; the other references of the push are
-	// handled as in stock git.
+	// In authoritative mode the storage core refuses, in the update hook, a reference that git cannot
+	// hold next to one the database holds. receive-pack reports it as a hook's refusal, with the
+	// reason on a remote: line, where stock git reports its own refusal of the name; the other
+	// references of the push are handled as in stock git.
 	refNameHookDecline("conflict: a branch below a branch", "step 03 git push --porcelain origin main:refs/heads/a/b: refs/heads/a/b", "refname conflict"),
 	refNameHookDecline("conflict: a branch above a branch", "step 03 git push --porcelain origin main:refs/heads/a: refs/heads/a", "refname conflict"),
 	refNameHookDecline("push non-atomic, one refused by the server",
@@ -107,7 +107,7 @@ var allowedDifferences = []allowedDifference{
 	// goes away with the bug.
 	{
 		row:    "conflict inside one push",
-		modes:  func(mode gitaiMode) bool { return mode.coreMode == corestore.ModeAuthoritative },
+		modes:  withAuthoritativeCore,
 		reason: bugRejectedUpdateCommitted + ": the database refuses the changeset that holds the rejected update, so receive-pack dies and nothing of the push lands",
 		diffs: []string{
 			`server ref refs/heads/a/b: stock "<oid>", gitai "<absent>"`,
@@ -127,12 +127,12 @@ var allowedDifferences = []allowedDifference{
 const reasonRefNameHookDecline = "the storage core's database holds every node's references, and the update hook refuses a name git cannot hold next to one of them, so that no node is left with a pair it cannot apply"
 
 // refNameHookDecline is the difference of a push whose reference the update hook declines for the
-// storage core, in the modes with a storage core: line is the step and reference of its status, and
-// stockReason the reason stock git gives.
+// storage core, in authoritative mode (shadow mode never declines a git write): line is the step and
+// reference of its status, and stockReason the reason stock git gives.
 func refNameHookDecline(row, line, stockReason string, more ...string) allowedDifference {
 	return allowedDifference{
 		row:    row,
-		modes:  withStorageCore,
+		modes:  withAuthoritativeCore,
 		reason: reasonRefNameHookDecline,
 		diffs: append([]string{
 			line + `: stock "! [remote rejected] (` + stockReason + `)", gitai "! [remote rejected] (hook declined)"`,
@@ -183,13 +183,15 @@ type knownProblem struct {
 func withStorageCore(mode gitaiMode) bool { return mode.coreMode != "" }
 
 // bugRejectedUpdateCommitted: git's reference-transaction hook is fed the updates that a non-atomic
-// receive-pack (REF_TRANSACTION_ALLOW_FAILURE) already rejected. The update hook keeps a name that
-// conflicts with a reference of the database out of the transaction, and the database refuses a
-// changeset that would leave a pair git cannot hold, so the database never records such a rejected
-// update. What is left is a push that creates both names of a pair: the update hook cannot see that,
-// git rejects one name, and the database refuses the changeset that still holds both. Authoritative
-// mode then fails the whole push (an allowed difference above); shadow mode lets git's write proceed
-// and records none of it, so the database misses the name git did write.
+// receive-pack (REF_TRANSACTION_ALLOW_FAILURE) already rejected. The database refuses a changeset
+// that would leave a pair git cannot hold, so it never records such a rejected update; in
+// authoritative mode the update hook also keeps a name that conflicts with a reference of the
+// database out of the transaction. What is left:
+//   - authoritative mode, a push that creates both names of a pair: the update hook cannot see that,
+//     git rejects one name, and the database refuses the changeset that still holds both, which fails
+//     the whole push (an allowed difference above);
+//   - shadow mode, which never declines a git write: the changeset that holds git's rejected name is
+//     not recorded, so the database misses the names git did write in that push.
 const bugRejectedUpdateCommitted = "a rejected update of a non-atomic push reaches the reference-transaction hook"
 
 func missingAt(reference string) []string {
@@ -198,8 +200,11 @@ func missingAt(reference string) []string {
 
 func withShadowCore(mode gitaiMode) bool { return mode.coreMode == corestore.ModeShadow }
 
+func withAuthoritativeCore(mode gitaiMode) bool { return mode.coreMode == corestore.ModeAuthoritative }
+
 var knownProblems = []knownProblem{
 	{"conflict inside one push", withShadowCore, bugRejectedUpdateCommitted, missingAt("refs/heads/a/b")},
+	{"push non-atomic, one refused by the server", withShadowCore, bugRejectedUpdateCommitted, missingAt("refs/heads/one")},
 }
 
 // knownProblemsFor returns the problems the row may have in mode.
