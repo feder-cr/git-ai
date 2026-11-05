@@ -51,6 +51,13 @@ func TestGraftStorageValidate(t *testing.T) {
 		{desc: "bad maintenance interval", storage: GraftStorage{Mode: "shadow", Database: valid.Database, Bucket: valid.Bucket, MaintenanceInterval: "0s"}, err: "maintenance_interval"},
 		{desc: "bad lease ttl", storage: GraftStorage{Mode: "shadow", Database: valid.Database, Bucket: valid.Bucket, LeaseTTL: "never"}, err: "lease_ttl"},
 		{desc: "negative checkpoint pack bytes", storage: GraftStorage{Mode: "shadow", Database: valid.Database, Bucket: valid.Bucket, CheckpointPackBytes: ptr[int64](-1)}, err: "checkpoint_pack_bytes"},
+		{desc: "postgres pool", storage: GraftStorage{Mode: "shadow", Database: "postgres://u@h/db", Bucket: valid.Bucket, DatabaseMaxOpenConns: ptr(8), DatabaseMaxIdleConns: ptr(0), DatabaseConnMaxIdleTime: "1m", DatabaseConnMaxLifetime: "1h"}},
+		{desc: "pool of a sqlite database", storage: GraftStorage{Mode: "shadow", Database: valid.Database, Bucket: valid.Bucket, DatabaseMaxOpenConns: ptr(8)}, err: "apply to a Postgres database only"},
+		{desc: "no open connection", storage: GraftStorage{Mode: "shadow", Database: "postgres://u@h/db", Bucket: valid.Bucket, DatabaseMaxOpenConns: ptr(0)}, err: "database_max_open_conns 0 must be at least 1"},
+		{desc: "more idle than open connections", storage: GraftStorage{Mode: "shadow", Database: "postgres://u@h/db", Bucket: valid.Bucket, DatabaseMaxOpenConns: ptr(4), DatabaseMaxIdleConns: ptr(5)}, err: "database_max_idle_conns 5 must be between 0 and database_max_open_conns 4"},
+		{desc: "idle connections above the default open connections", storage: GraftStorage{Mode: "shadow", Database: "postgres://u@h/db", Bucket: valid.Bucket, DatabaseMaxIdleConns: ptr(33)}, err: "database_max_idle_conns 33"},
+		{desc: "bad idle time", storage: GraftStorage{Mode: "shadow", Database: "postgres://u@h/db", Bucket: valid.Bucket, DatabaseConnMaxIdleTime: "0s"}, err: "database_conn_max_idle_time"},
+		{desc: "bad lifetime", storage: GraftStorage{Mode: "shadow", Database: "postgres://u@h/db", Bucket: valid.Bucket, DatabaseConnMaxLifetime: "forever"}, err: "database_conn_max_lifetime"},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
@@ -97,6 +104,12 @@ func TestGraftStorageDefaults(t *testing.T) {
 	require.Equal(t, DefaultGraftStorageLeaseTTL, ttl)
 	require.Equal(t, DefaultGraftStorageCheckpointChangesets, s.CheckpointChangesetsOrDefault())
 	require.Equal(t, DefaultGraftStorageCheckpointPackBytes, s.CheckpointPackBytesOrDefault())
+	pool, err := s.DatabasePoolOrDefault()
+	require.NoError(t, err)
+	require.Equal(t, GraftStorageDatabasePool{MaxOpenConns: 32, MaxIdleConns: 32, ConnMaxIdleTime: 5 * time.Minute, ConnMaxLifetime: 30 * time.Minute}, pool)
+	pool, err = GraftStorage{DatabaseMaxOpenConns: ptr(8)}.DatabasePoolOrDefault()
+	require.NoError(t, err)
+	require.Equal(t, 8, pool.MaxIdleConns, "the idle connections follow the open ones")
 
 	s = GraftStorage{Mode: "shadow", SyncTimeout: "250ms"}
 	require.True(t, s.Enabled())

@@ -68,6 +68,78 @@ type GraftStorage struct {
 	// before it must renew it (Go duration). Empty means
 	// DefaultGraftStorageLeaseTTL.
 	LeaseTTL string `json:"lease_ttl" toml:"lease_ttl,omitempty"`
+	// DatabaseMaxOpenConns bounds the connections this node opens to a Postgres
+	// database. Unset means DefaultGraftStorageDatabaseMaxOpenConns.
+	DatabaseMaxOpenConns *int `json:"database_max_open_conns" toml:"database_max_open_conns,omitempty"`
+	// DatabaseMaxIdleConns is how many of them stay open while unused. Unset
+	// means DatabaseMaxOpenConns.
+	DatabaseMaxIdleConns *int `json:"database_max_idle_conns" toml:"database_max_idle_conns,omitempty"`
+	// DatabaseConnMaxIdleTime closes a connection unused for this long (Go
+	// duration). Empty means DefaultGraftStorageDatabaseConnMaxIdleTime.
+	DatabaseConnMaxIdleTime string `json:"database_conn_max_idle_time" toml:"database_conn_max_idle_time,omitempty"`
+	// DatabaseConnMaxLifetime replaces a connection this long after it was opened
+	// (Go duration). Empty means DefaultGraftStorageDatabaseConnMaxLifetime.
+	DatabaseConnMaxLifetime string `json:"database_conn_max_lifetime" toml:"database_conn_max_lifetime,omitempty"`
+}
+
+const (
+	// DefaultGraftStorageDatabaseMaxOpenConns is the default
+	// GraftStorage.DatabaseMaxOpenConns: sqlstore.DefaultPool, which says why.
+	DefaultGraftStorageDatabaseMaxOpenConns = 32
+	// DefaultGraftStorageDatabaseConnMaxIdleTime is the default
+	// GraftStorage.DatabaseConnMaxIdleTime.
+	DefaultGraftStorageDatabaseConnMaxIdleTime = 5 * time.Minute
+	// DefaultGraftStorageDatabaseConnMaxLifetime is the default
+	// GraftStorage.DatabaseConnMaxLifetime.
+	DefaultGraftStorageDatabaseConnMaxLifetime = 30 * time.Minute
+)
+
+// GraftStorageDatabasePool is the connection pool of a Postgres database.
+type GraftStorageDatabasePool struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
+}
+
+// DatabasePoolOrDefault returns the connection pool of a Postgres database,
+// applying the defaults.
+func (s GraftStorage) DatabasePoolOrDefault() (GraftStorageDatabasePool, error) {
+	pool := GraftStorageDatabasePool{MaxOpenConns: DefaultGraftStorageDatabaseMaxOpenConns}
+	if s.DatabaseMaxOpenConns != nil {
+		pool.MaxOpenConns = *s.DatabaseMaxOpenConns
+	}
+	if pool.MaxOpenConns < 1 {
+		return GraftStorageDatabasePool{}, fmt.Errorf("graft storage: database_max_open_conns %d must be at least 1", pool.MaxOpenConns)
+	}
+	pool.MaxIdleConns = pool.MaxOpenConns
+	if s.DatabaseMaxIdleConns != nil {
+		pool.MaxIdleConns = *s.DatabaseMaxIdleConns
+	}
+	if pool.MaxIdleConns < 0 || pool.MaxIdleConns > pool.MaxOpenConns {
+		return GraftStorageDatabasePool{}, fmt.Errorf("graft storage: database_max_idle_conns %d must be between 0 and database_max_open_conns %d", pool.MaxIdleConns, pool.MaxOpenConns)
+	}
+
+	var err error
+	if pool.ConnMaxIdleTime, err = positiveDurationOrDefault("database_conn_max_idle_time", s.DatabaseConnMaxIdleTime, DefaultGraftStorageDatabaseConnMaxIdleTime); err != nil {
+		return GraftStorageDatabasePool{}, err
+	}
+	if pool.ConnMaxLifetime, err = positiveDurationOrDefault("database_conn_max_lifetime", s.DatabaseConnMaxLifetime, DefaultGraftStorageDatabaseConnMaxLifetime); err != nil {
+		return GraftStorageDatabasePool{}, err
+	}
+	return pool, nil
+}
+
+// validateDatabasePool checks the connection pool settings, which apply to a
+// Postgres database only: a SQLite database does not pool its connections that
+// way, and a setting that does nothing is an error, not silence.
+func (s GraftStorage) validateDatabasePool() error {
+	set := s.DatabaseMaxOpenConns != nil || s.DatabaseMaxIdleConns != nil || s.DatabaseConnMaxIdleTime != "" || s.DatabaseConnMaxLifetime != ""
+	if set && strings.HasPrefix(s.Database, "sqlite:") {
+		return fmt.Errorf("graft storage: the database_max_open_conns, database_max_idle_conns, database_conn_max_idle_time and database_conn_max_lifetime settings apply to a Postgres database only")
+	}
+	_, err := s.DatabasePoolOrDefault()
+	return err
 }
 
 // Values of GraftStorage.Checkpoints and GraftStorage.GC.
@@ -258,6 +330,9 @@ func (s GraftStorage) validate(standalone bool) error {
 		return fmt.Errorf("graft storage: database is required when the storage core is on")
 	default:
 		return fmt.Errorf("graft storage: unsupported database URL (want sqlite:///absolute/path or postgres://...)")
+	}
+	if err := s.validateDatabasePool(); err != nil {
+		return err
 	}
 
 	if s.Bucket == "" {
