@@ -53,10 +53,12 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 		return fmt.Errorf("reading stdin from request: %w", err)
 	}
 
-	// Every reference update that git performs with this hook passes here first, before git locks
-	// or writes anything and whatever asked for it (a fetch, for example, takes its names from the
-	// remote). A failed hook makes git abort the whole transaction.
-	if state == ReferenceTransactionPreparing {
+	// Every reference update that git performs with this hook passes here before git writes it,
+	// whatever asked for it (a fetch, for example, takes its names from the remote). A failed hook
+	// makes git abort the whole transaction. The prepared phase is the one that always reaches the
+	// server: gitaly-hooks forwards the preparing phase only when the storage core wants it, and
+	// then this refuses before the core builds the pack of the transaction.
+	if state == ReferenceTransactionPreparing || state == ReferenceTransactionPrepared {
 		if err := validateReferenceNameLengths(objectHash, changes); err != nil {
 			return structerr.NewInvalidArgument("%w", err)
 		}
