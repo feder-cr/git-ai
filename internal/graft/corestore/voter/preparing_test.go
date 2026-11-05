@@ -89,13 +89,13 @@ func TestPreparingUploadsThePackOnce(t *testing.T) {
 					require.Equal(t, steps, metricValue(t, f.voter, "graft_storage_preparing_step_seconds", map[string]string{"kind": "update", "step": step}), step)
 				}
 				require.Zero(t, metricValue(t, f.voter, "graft_storage_preparing_step_seconds", map[string]string{"kind": "create"}))
-				// The Prepared phase reads the record and the local references and commits,
-				// once each in authoritative mode; the pack was prepared, and the durability
-				// of the fixture is not deferred.
-				for _, step := range []string{"record", "local_read", "commit"} {
+				// The Prepared phase reads the local references and commits, once each in
+				// authoritative mode; it uses the record and the pack that Preparing read and
+				// uploaded, and the durability of the fixture is not deferred.
+				for _, step := range []string{"local_read", "commit"} {
 					require.Equal(t, steps, metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"kind": "update", "step": step}), step)
 				}
-				for _, step := range []string{"pack", "durability"} {
+				for _, step := range []string{"record", "pack", "durability"} {
 					require.Zero(t, metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"step": step}), step)
 				}
 

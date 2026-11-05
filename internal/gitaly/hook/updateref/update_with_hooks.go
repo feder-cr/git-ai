@@ -17,6 +17,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/gitaly/config"
 	"github.com/feder-cr/git-ai/internal/gitaly/hook"
 	"github.com/feder-cr/git-ai/internal/gitaly/storage"
+	"github.com/feder-cr/git-ai/internal/graft/corestore"
 	"github.com/feder-cr/git-ai/internal/log"
 	"github.com/feder-cr/git-ai/internal/transaction/txinfo"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
@@ -372,7 +373,11 @@ func (u *UpdaterWithHooks) UpdateReference(
 		}
 	}
 
-	if err := u.hookManager.ReferenceTransactionHook(ctx, hook.ReferenceTransactionPrepared, []string{hooksPayload}, strings.NewReader(changes)); err != nil {
+	// git's prepare checked the old value of the update against the local reference under the lock
+	// it holds now (the zero object ID: the reference must not exist), so the storage core does not
+	// read the local references again in this phase.
+	preparedCtx := corestore.WithOldValuesCheckedByGit(ctx)
+	if err := u.hookManager.ReferenceTransactionHook(preparedCtx, hook.ReferenceTransactionPrepared, []string{hooksPayload}, strings.NewReader(changes)); err != nil {
 		abortTransaction()
 
 		// The storage core refused the name: the same refusal as git's file/directory

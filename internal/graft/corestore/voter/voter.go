@@ -119,6 +119,10 @@ type preparedPack struct {
 	// When it is false, Preparing failed and Prepared does the work itself.
 	ok     bool
 	repoID int64
+	// record is the repository record that Preparing read before the upload. Prepared
+	// uses it instead of reading it again while git holds the reference lock, as long as
+	// it uses the pack (usable); a repository removed since is found by the commit.
+	record corestore.Repository
 	// pack is the uploaded pack, with an empty key when the transaction brings
 	// no new objects.
 	pack corestore.PackUpload
@@ -270,7 +274,7 @@ func (v *Voter) preparePack(ctx context.Context, payload gitcmd.HooksPayload, ch
 		return nil, err
 	}
 
-	return &preparedPack{ok: true, repoID: record.ID, pack: pack}, nil
+	return &preparedPack{ok: true, repoID: record.ID, record: record, pack: pack}, nil
 }
 
 // Prepared commits the transaction described by the hook input (changes) to
@@ -420,7 +424,13 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	// result is the label of graft_storage_changesets_total. Every path that
 	// does not set it, including a panic, counts as an error.
 	result := ""
+	// retried is set when the transaction is handed to a second run of prepare, which
+	// counts it.
+	retried := false
 	defer func() {
+		if retried {
+			return
+		}
 		if result == "" {
 			result = resultError
 		}
@@ -469,12 +479,25 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 		return nil
 	}
 
-	// The write deadline of a pack uploaded here starts before this read of the
-	// record (doc/graft/PLAN7.md, PACK OWNERSHIP RULE 4).
-	readAt := time.Now()
-	record, err := v.core.Meta.GetRepository(ctx, corestore.KeyOf(payload.Repo))
-	if err == nil {
-		v.observePreparedStep(updates, stepRecord, time.Since(readAt))
+	// The record that Preparing read is used when its pack is (stage 1a of
+	// doc/graft/design/dbfirst-writes.md): the read is not repeated while git holds the
+	// lock. A repository removed since makes the commit fail with
+	// ErrRepositoryNotFound, and the transaction then runs again from a fresh read.
+	// Otherwise the write deadline of a pack uploaded here starts before this read of
+	// the record (doc/graft/PLAN7.md, PACK OWNERSHIP RULE 4).
+	var (
+		readAt time.Time
+		record corestore.Repository
+	)
+	reusedRecord := prepared != nil && prepared.ok && prepared.record.ID != 0 && prepared.usable(time.Now())
+	if reusedRecord {
+		record = prepared.record
+	} else {
+		readAt = time.Now()
+		record, err = v.core.Meta.GetRepository(ctx, corestore.KeyOf(payload.Repo))
+		if err == nil {
+			v.observePreparedStep(updates, stepRecord, time.Since(readAt))
+		}
 	}
 	if errors.Is(err, corestore.ErrRepositoryNotFound) {
 		if shadow {
@@ -514,11 +537,18 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	}
 
 	// The local_read step covers the read of the local values and the check of the
-	// old values against them (rejectedByGit), in expectations.
-	localRead := time.Now()
-	refUpdates, err := v.expectations(ctx, repo, hash, updates, payload.IsHookRequested(gitcmd.PreReceiveHook))
-	if err == nil {
-		v.observePreparedStep(updates, stepLocalRead, time.Since(localRead))
+	// old values against them (rejectedByGit), in expectations. A transaction whose
+	// old values git checked before this phase (UpdaterWithHooks) needs neither: the
+	// local values are its old values (TestUpdaterWithHooks_GitChecksTheOldValueBeforeThePreparedHook).
+	var refUpdates []corestore.RefUpdate
+	if corestore.OldValuesCheckedByGit(ctx) {
+		refUpdates = expectationsOfCheckedInput(updates)
+	} else {
+		localRead := time.Now()
+		refUpdates, err = v.expectations(ctx, repo, hash, updates, payload.IsHookRequested(gitcmd.PreReceiveHook))
+		if err == nil {
+			v.observePreparedStep(updates, stepLocalRead, time.Since(localRead))
+		}
 	}
 	if err != nil {
 		var (
@@ -602,6 +632,13 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 		})
 	}
 	if errors.Is(err, corestore.ErrRepositoryNotFound) {
+		if reusedRecord {
+			// The repository of the record Preparing read was removed since, and may have
+			// been created again at the same path: the transaction runs again with a fresh
+			// read of the record, and a pack of its own if it is another repository.
+			retried = true
+			return v.prepare(ctx, payload, changes, meta, nil, shadow)
+		}
 		if shadow {
 			v.metrics.untracked.Inc()
 			result = resultSkipped
@@ -752,6 +789,19 @@ func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, hash git
 	}
 
 	return refUpdates, nil
+}
+
+// expectationsOfCheckedInput returns the compare-and-swap condition of every update of a
+// transaction whose old values git checked against the local references under the lock
+// before the Prepared phase (corestore.OldValuesCheckedByGit): the old value of the input,
+// the zero object ID meaning absent. They are what expectations would return after
+// reading the local references, which hold those values.
+func expectationsOfCheckedInput(updates []inputUpdate) []corestore.RefUpdate {
+	refUpdates := make([]corestore.RefUpdate, 0, len(updates))
+	for _, u := range updates {
+		refUpdates = append(refUpdates, corestore.RefUpdate{Name: u.name, Expect: corestore.ExpectValue, Old: u.old, New: u.new})
+	}
+	return refUpdates
 }
 
 // rejectedByGit returns the error of an update with an old value that git checked
