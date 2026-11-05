@@ -226,7 +226,7 @@ func (v *Voter) preparePack(ctx context.Context, payload gitcmd.HooksPayload, ch
 		return nil, fmt.Errorf("object format: %w", err)
 	}
 
-	updates, err := parseInput(changes, hash, storage.IsPoolRepository(payload.Repo))
+	updates, err := parsePayloadInput(payload, changes, hash)
 	if err != nil {
 		// Prepared rejects or skips the input with the same error.
 		return nil, nil
@@ -372,7 +372,7 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 		return fmt.Errorf("storage core: object format: %w", err)
 	}
 
-	updates, err := parseInput(changes, hash, storage.IsPoolRepository(payload.Repo))
+	updates, err := parsePayloadInput(payload, changes, hash)
 	if err != nil {
 		return fmt.Errorf("storage core: malformed reference transaction input: %w", err)
 	}
@@ -1007,7 +1007,7 @@ func (v *Voter) committedLocally(ctx context.Context, payload gitcmd.HooksPayloa
 	if err != nil {
 		return false
 	}
-	updates, err := parseInput(changes, hash, storage.IsPoolRepository(payload.Repo))
+	updates, err := parsePayloadInput(payload, changes, hash)
 	if err != nil || len(updates) == 0 {
 		return false
 	}
@@ -1050,6 +1050,11 @@ func (v *Voter) Collect(metrics chan<- prometheus.Metric) {
 	for _, c := range v.metrics.collectors() {
 		c.Collect(metrics)
 	}
+}
+
+// parsePayloadInput parses the hook input of the transaction of payload's repository.
+func parsePayloadInput(payload gitcmd.HooksPayload, changes []byte, hash git.ObjectHash) ([]inputUpdate, error) {
+	return parseInput(changes, hash, storage.IsPoolRepository(payload.Repo))
 }
 
 // parseInput parses the hook input "<old> SP <new> SP <ref>" lines. Empty lines

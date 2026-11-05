@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/feder-cr/git-ai/internal/git"
+	"github.com/feder-cr/git-ai/internal/git/gitcmd"
+	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
 
 func TestParseInput_referenceNameLength(t *testing.T) {
@@ -64,5 +66,18 @@ func TestParseInput_objectPoolAllowance(t *testing.T) {
 	_, err = parseInput(line("refs/remotes/origin/", 1025), hash, false)
 	require.ErrorContains(t, err, "over the limit of 1024 bytes")
 	_, err = parseInput(line("refs/heads/", 1025), hash, true)
+	require.ErrorContains(t, err, "over the limit of 1024 bytes")
+}
+
+func TestParsePayloadInput_objectPool(t *testing.T) {
+	t.Parallel()
+
+	hash := git.ObjectHashSHA1
+	changes := []byte(fmt.Sprintf("%s %s refs/remotes/origin/%s\n", hash.ZeroOID, strings.Repeat("1", hash.EncodedLen()), strings.Repeat("x", 1039-len("refs/remotes/origin/"))))
+
+	_, err := parsePayloadInput(gitcmd.HooksPayload{Repo: &gitalypb.Repository{RelativePath: "@cluster/pools/ab/cd/1"}}, changes, hash)
+	require.NoError(t, err)
+
+	_, err = parsePayloadInput(gitcmd.HooksPayload{Repo: &gitalypb.Repository{RelativePath: "repository.git"}}, changes, hash)
 	require.ErrorContains(t, err, "over the limit of 1024 bytes")
 }
