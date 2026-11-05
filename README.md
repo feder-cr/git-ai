@@ -139,7 +139,7 @@ and all 250 changes land (1,245-1,806 lands per minute, p99 2.0-3.4 s). Details 
 
 ## Status
 
-Version 0.4.0. Everything above is implemented and covered by unit,
+Version 0.4.1. Everything above is implemented and covered by unit,
 end-to-end, multi-node, crash and fuzz tests. All of them run on one machine:
 several nodes share one database and one bucket, nodes on separate machines are
 not tested. The tests and benchmarks use file and in-memory buckets; S3, GCS
@@ -148,7 +148,7 @@ default (`gc = "auto"` or `graft storage gc`, see
 [STORAGE.md](doc/graft/STORAGE.md)). Interfaces may still change before 1.0.
 Known gaps are listed in [LIMITATIONS.md](doc/graft/LIMITATIONS.md).
 
-Since 0.4.0, on the main branch: the access policy reloads on SIGUSR1 without a
+The access policy reloads on SIGUSR1 without a
 restart, and `graft policy check` validates a policy file before a reload
 ([CONFIGURATION.md](doc/graft/CONFIGURATION.md#reloading-the-policy)).
 
