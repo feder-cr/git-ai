@@ -50,7 +50,17 @@ func Open(ctx context.Context, cfg config.GraftStorage) (*corestore.Core, error)
 		}
 	}
 
-	meta, err := sqlstore.Open(ctx, cfg.Database)
+	pool, err := cfg.DatabasePoolOrDefault()
+	if err != nil {
+		return nil, err
+	}
+
+	meta, err := sqlstore.OpenWithPool(ctx, cfg.Database, sqlstore.Pool{
+		MaxOpenConns:    pool.MaxOpenConns,
+		MaxIdleConns:    pool.MaxIdleConns,
+		ConnMaxIdleTime: pool.ConnMaxIdleTime,
+		ConnMaxLifetime: pool.ConnMaxLifetime,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("graft storage: open database: %w", err)
 	}

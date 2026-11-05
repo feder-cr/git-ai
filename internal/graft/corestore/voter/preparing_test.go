@@ -89,6 +89,15 @@ func TestPreparingUploadsThePackOnce(t *testing.T) {
 					require.Equal(t, steps, metricValue(t, f.voter, "graft_storage_preparing_step_seconds", map[string]string{"kind": "update", "step": step}), step)
 				}
 				require.Zero(t, metricValue(t, f.voter, "graft_storage_preparing_step_seconds", map[string]string{"kind": "create"}))
+				// The Prepared phase reads the record and the local references and commits,
+				// once each in authoritative mode; the pack was prepared, and the durability
+				// of the fixture is not deferred.
+				for _, step := range []string{"record", "local_read", "commit"} {
+					require.Equal(t, steps, metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"kind": "update", "step": step}), step)
+				}
+				for _, step := range []string{"pack", "durability"} {
+					require.Zero(t, metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"step": step}), step)
+				}
 
 				f.voter.Committed(f.ctx, f.payload, input)
 				require.Equal(t, []noteCall{{repoPath: f.repoPath, repoID: f.repoID, seq: f.seq(2)}}, f.applier.calls)
@@ -111,7 +120,33 @@ func TestPreparedWithoutPreparing(t *testing.T) {
 			require.Equal(t, 1, blobs.count(), "Prepared uploads the pack itself")
 			require.Zero(t, metricValue(t, f.voter, "graft_storage_preparing_step_seconds", nil),
 				"the steps are those of the Preparing phase, not of a pack that Prepared builds")
+			require.Equal(t, float64(1), metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"kind": "create", "step": "pack"}),
+				"the pack that Prepared builds is a step of the Prepared phase")
 			require.Equal(t, blobs.puts[0], f.lastChangeset(t).PackKey)
+			require.Equal(t, corestore.Target(f.b.String()), f.dbRef(t, ref))
+		})
+
+		t.Run("no pack step without new tips", func(t *testing.T) {
+			f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, dialect: dialect})
+			gittest.WriteRef(t, f.cfg, f.repoPath, ref, f.a)
+			f.seed(t, ref, corestore.Target(f.a.String()))
+
+			require.NoError(t, f.prepared(line(f.a.String(), f.zero, ref)))
+			require.Zero(t, metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"step": "pack"}),
+				"a deletion builds no pack")
+			require.Equal(t, float64(1), metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"step": "commit"}))
+		})
+
+		t.Run("a failed step is not observed", func(t *testing.T) {
+			f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, dialect: dialect})
+			gittest.WriteRef(t, f.cfg, f.repoPath, ref, f.b)
+			f.seed(t, ref, corestore.Target(f.b.String()))
+
+			// The database holds b: the commit of an update from a fails its compare-and-swap.
+			require.Error(t, f.prepared(line(f.a.String(), f.c.String(), ref)))
+			for step, want := range map[string]float64{"record": 1, "local_read": 1, "pack": 1, "commit": 0} {
+				require.Equal(t, want, metricValue(t, f.voter, "graft_storage_prepared_step_seconds", map[string]string{"step": step}), step)
+			}
 			require.Equal(t, corestore.Target(f.b.String()), f.dbRef(t, ref))
 		})
 

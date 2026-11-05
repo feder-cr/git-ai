@@ -119,13 +119,77 @@ func ParseDSN(dsn string) (Dialect, string, error) {
 // the lock is acquired in slices of sqliteBusySlice, never longer than the
 // context's deadline.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	return open(ctx, dsn, 0)
+	return OpenWithPool(ctx, dsn, DefaultPool)
 }
 
-// open is Open applying only the first migrations of the schema when
+// Pool bounds the connections of a Postgres store, which database/sql pools.
+// Without bounds the pool keeps two idle connections and opens a new one for
+// every concurrent query beyond them: under load each transaction then pays for
+// a connection, and a burst of hundreds of writers is a burst of connection
+// attempts that the server or the network in front of it resets. A SQLite store
+// does not use it: its writers are queued (writeQueue) and its connections are
+// local files.
+type Pool struct {
+	// MaxOpenConns is the most connections open at once. A query that finds
+	// them all in use waits for one, until its context ends. Every operation of
+	// the store holds one connection at a time, so a full pool queues
+	// operations and never blocks one that holds a connection.
+	MaxOpenConns int
+	// MaxIdleConns is the most connections kept open while unused; at most
+	// MaxOpenConns.
+	MaxIdleConns int
+	// ConnMaxIdleTime closes a connection unused for this long (0: never).
+	ConnMaxIdleTime time.Duration
+	// ConnMaxLifetime closes a connection this long after it was opened, once it
+	// is not in use (0: never).
+	ConnMaxLifetime time.Duration
+}
+
+// DefaultPool is the pool of Open. With it, BenchmarkCommitChangesetConcurrent
+// commits 2,019-2,127 changesets per second for 16 writers in separate
+// repositories on the development machine, and 2,586-2,630 for 64 writers
+// queued on the 32 connections: more than twenty times what a node committed end
+// to end in the land benchmarks (90 to 120 per second). As many connections stay
+// idle, so that steady load reuses them; the idle ones close after five minutes,
+// and every connection is replaced after thirty, so that the pool follows a
+// failover or a changed DNS name. Every node, and during a graceful upgrade both
+// the old and the new process of a node, has a pool of its own: their sum must
+// stay below the server's max_connections, since a refused connection (53300)
+// fails the operation and is not retried.
+var DefaultPool = Pool{
+	MaxOpenConns:    32,
+	MaxIdleConns:    32,
+	ConnMaxIdleTime: 5 * time.Minute,
+	ConnMaxLifetime: 30 * time.Minute,
+}
+
+// Validate checks that the pool can serve queries.
+func (p Pool) Validate() error {
+	switch {
+	case p.MaxOpenConns < 1:
+		return fmt.Errorf("database pool: max open connections %d must be at least 1", p.MaxOpenConns)
+	case p.MaxIdleConns < 0 || p.MaxIdleConns > p.MaxOpenConns:
+		return fmt.Errorf("database pool: max idle connections %d must be between 0 and the max open connections %d", p.MaxIdleConns, p.MaxOpenConns)
+	case p.ConnMaxIdleTime < 0 || p.ConnMaxLifetime < 0:
+		return fmt.Errorf("database pool: connection max idle time %s and lifetime %s must not be negative", p.ConnMaxIdleTime, p.ConnMaxLifetime)
+	}
+	return nil
+}
+
+// OpenWithPool is Open with the given pool for a Postgres database. The pool
+// does not apply to SQLite.
+func OpenWithPool(ctx context.Context, dsn string, pool Pool) (*Store, error) {
+	return open(ctx, dsn, 0, pool)
+}
+
+// open is OpenWithPool applying only the first migrations of the schema when
 // migrations is greater than 0 (tests build a database as an earlier version
 // left it), every migration otherwise.
-func open(ctx context.Context, dsn string, migrations int) (*Store, error) {
+func open(ctx context.Context, dsn string, migrations int, pool Pool) (*Store, error) {
+	if err := pool.Validate(); err != nil {
+		return nil, err
+	}
+
 	dialect, target, err := ParseDSN(dsn)
 	if err != nil {
 		return nil, err
@@ -157,6 +221,16 @@ func open(ctx context.Context, dsn string, migrations int) (*Store, error) {
 	if err := applyMigrations(ctx, db, dialect, migrations); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply migrations: %w", err)
+	}
+
+	// The bounds apply once the migrations are done: they hold the advisory lock
+	// on a connection of their own while the migration library uses others, the
+	// one place where the store holds two connections at once.
+	if dialect == Postgres {
+		db.SetMaxOpenConns(pool.MaxOpenConns)
+		db.SetMaxIdleConns(pool.MaxIdleConns)
+		db.SetConnMaxIdleTime(pool.ConnMaxIdleTime)
+		db.SetConnMaxLifetime(pool.ConnMaxLifetime)
 	}
 
 	readDB := db

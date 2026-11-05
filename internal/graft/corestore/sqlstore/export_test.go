@@ -13,7 +13,7 @@ import (
 // migration), as a v0.1.0 binary left it: no checkpoints, no tombstones and no
 // owned-key trigger.
 func OpenV010(ctx context.Context, dsn string) (*Store, error) {
-	return open(ctx, dsn, 1)
+	return open(ctx, dsn, 1, DefaultPool)
 }
 
 // SetSnapshotWrittenHook installs fn as the hook that CreateCheckpoint of s

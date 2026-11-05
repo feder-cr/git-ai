@@ -287,6 +287,10 @@ are in [STORAGE.md](STORAGE.md).
 | `checkpoint_changesets` | integer | `1000` | Checkpoint a repository once this many changesets follow its newest checkpoint. `0` never checkpoints by count. |
 | `checkpoint_pack_bytes` | integer | `268435456` (256 MiB) | Checkpoint a repository once the packs of the changesets after its newest checkpoint hold this many bytes. `0` never checkpoints by size. |
 | `lease_ttl` | string (Go duration) | `"10m"` | How long a node holds a repository's maintenance lease; renewed every third of it while the work runs. Must be positive. |
+| `database_max_open_conns` | integer | `32` | Postgres only: the most connections this node opens to the database. A request that finds them all in use waits for one, as long as its own deadline allows. Every node opens up to this many, and during a graceful upgrade the old and the new process of a node each have a pool, so one node can briefly use twice as many. Keep the sum, plus what other clients use, below the server's `max_connections` (100 by default in PostgreSQL, minus its `superuser_reserved_connections`): a connection the server refuses (error 53300) fails the operation and is not retried. With the default, the database-only benchmark on a 16-CPU machine commits 2,019 to 2,127 changesets per second for 16 writers in separate repositories and 2,586 to 2,630 for 64 writers queued on the 32 connections, more than twenty times what one node committed end to end in the land benchmarks. At least 1. |
+| `database_max_idle_conns` | integer | `database_max_open_conns` | Postgres only: how many of those connections stay open while unused, so that steady load reuses them instead of opening a connection per transaction. Between 0 and `database_max_open_conns`. |
+| `database_conn_max_idle_time` | string (Go duration) | `"5m"` | Postgres only: a connection unused for this long is closed, so that the pool shrinks after a burst. Must be positive. |
+| `database_conn_max_lifetime` | string (Go duration) | `"30m"` | Postgres only: a connection is replaced this long after it was opened, so that the pool follows a failover or a changed DNS name. Must be positive. |
 
 ```toml
 [graft.storage]
@@ -302,8 +306,11 @@ Startup fails when the mode is unknown, authoritative mode is set without
 bucket is missing or not a URL, `node_id` contains spaces or slashes, a
 duration is not a positive Go duration, `gc_grace` is not greater than
 `sync_timeout + gc_margin`, `checkpoints` or `gc` is neither `off` nor `auto`,
-either is `"auto"` outside authoritative mode, or `checkpoint_pack_bytes` is
-negative.
+either is `"auto"` outside authoritative mode, `checkpoint_pack_bytes` is
+negative, a `database_*` connection setting is given for a SQLite database,
+`database_max_open_conns` is below 1, or `database_max_idle_conns` is outside 0
+to `database_max_open_conns`. A SQLite database is opened as before: its writers
+are queued by the storage core and its connections are local files.
 
 ## `graft-cache` flags
 
