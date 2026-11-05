@@ -260,6 +260,9 @@ type Updater struct {
 	referenceBackend git.ReferenceBackend
 	ctx              context.Context
 
+	// copiesExistingReferences is set by WithExistingReferences.
+	copiesExistingReferences bool
+
 	// state tracks the current state of the updater to ensure correct calling semantics.
 	state state
 }
@@ -271,8 +274,20 @@ type updaterConfig struct {
 	disableTransactions bool
 	noDeref             bool
 	deferredDurability  bool
+	existingReferences  bool
 	refBackend          *git.ReferenceBackend
 	refURI              string
+}
+
+// WithExistingReferences lifts the limit on the length of reference names, for a caller that copies
+// references that already exist from one store of the repository to another, rather than taking a new
+// name from anyone: a rebuild from the storage core's database, a migration of the reference backend.
+// Refusing there would make a repository with an existing long reference impossible to rebuild,
+// migrate or clean up.
+func WithExistingReferences() UpdaterOpt {
+	return func(cfg *updaterConfig) {
+		cfg.existingReferences = true
+	}
 }
 
 // WithDeferredReferenceDurability makes git write the references without fsync. Only the
@@ -382,6 +397,8 @@ func New(ctx context.Context, repo gitcmd.RepositoryExecutor, opts ...UpdaterOpt
 		referenceBackend: referenceBackend,
 		state:            stateIdle,
 		ctx:              ctx,
+
+		copiesExistingReferences: cfg.existingReferences,
 	}, nil
 }
 
@@ -430,6 +447,13 @@ func (u *Updater) Update(reference git.ReferenceName, newOID, oldOID git.ObjectI
 		return err
 	}
 
+	// A deletion is exempt: it is how an existing long reference is cleaned up.
+	if !u.objectHash.IsZeroOID(newOID) {
+		if err := u.validateNameLength(reference); err != nil {
+			return err
+		}
+	}
+
 	return u.write("update %s\x00%s\x00%s\x00", reference.String(), newOID, oldOID)
 }
 
@@ -437,6 +461,13 @@ func (u *Updater) Update(reference git.ReferenceName, newOID, oldOID git.ObjectI
 // or the oldOID.
 func (u *Updater) UpdateSymbolicReference(reference, newTarget git.ReferenceName) error {
 	if err := u.expectState(stateStarted); err != nil {
+		return err
+	}
+
+	if err := u.validateNameLength(reference); err != nil {
+		return err
+	}
+	if err := u.validateNameLength(newTarget); err != nil {
 		return err
 	}
 
@@ -530,6 +561,20 @@ func (u *Updater) closeWithError(closeErr error) error {
 	}
 
 	u.closeErr = errClosed
+	return nil
+}
+
+// validateNameLength refuses a name over the limit before git-update-ref(1) sees it. Like any error
+// of the updater it closes the updater, which aborts the transaction and everything queued in it.
+func (u *Updater) validateNameLength(name git.ReferenceName) error {
+	if u.copiesExistingReferences {
+		return nil
+	}
+
+	if err := git.ValidateReferenceNameLength(name.String()); err != nil {
+		return u.closeWithError(structerr.NewInvalidArgument("%w", err))
+	}
+
 	return nil
 }
 
