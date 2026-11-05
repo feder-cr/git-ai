@@ -451,8 +451,12 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 		return structerr.NewFailedPrecondition("storage core: repository import is not complete; run ImportRepository again")
 	}
 
-	refUpdates, err := v.expectations(ctx, repo, updates)
+	refUpdates, err := v.expectations(ctx, repo, updates, payload.IsHookRequested(gitcmd.PreReceiveHook))
 	if err != nil {
+		var exists updateref.ReferenceAlreadyExistsError
+		if errors.As(err, &exists) {
+			result = resultConflict
+		}
 		return err
 	}
 
@@ -583,7 +587,16 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 // the table of doc/graft/PLAN6.md (RULE 5). The local references are read in
 // one git process: git holds their locks in the Prepared phase, so they still
 // show the old values.
-func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, updates []inputUpdate) ([]corestore.RefUpdate, error) {
+//
+// oldValueAlwaysSent tells that the writer always gives git an old value:
+// receive-pack and UpdaterWithHooks, the only writers that request the pre-receive
+// hook. Their zero old value means the reference must not exist. If it does, git
+// rejected the update: receive-pack without --atomic lets one update fail and
+// still feeds it to this hook, without marking it, so the update must never be
+// taken for a forced one. It returns updateref.ReferenceAlreadyExistsError, and
+// the whole transaction is refused, because the voter does not know the other
+// rejected updates of the input.
+func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, updates []inputUpdate, oldValueAlwaysSent bool) ([]corestore.RefUpdate, error) {
 	names := make([]string, len(updates))
 	for i, u := range updates {
 		names[i] = u.name
@@ -628,6 +641,9 @@ func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, updates 
 			// Git reports the zero value both for "must not exist" and for a forced
 			// update. The local reference tells them apart.
 			if _, exists := local[u.name]; exists {
+				if oldValueAlwaysSent {
+					return nil, fmt.Errorf("storage core: %w", updateref.ReferenceAlreadyExistsError{ReferenceName: u.name})
+				}
 				ru.Expect = corestore.ExpectAny
 			} else {
 				ru.Expect = corestore.ExpectValue

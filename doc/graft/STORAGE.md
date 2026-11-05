@@ -584,6 +584,13 @@ or re-import the repository from scratch (see
   aborted after the database commit.
 - **A node with an empty disk.** Its first request for a repository hydrates
   it.
+- **A push that creates a branch another client just created.** Without
+  `--atomic`, git lets one update of a push fail and still shows it to the
+  reference-transaction hook. The database must not record it, so the storage
+  core refuses the whole push: the client's push fails, and the other references
+  of that push do not land either, unlike a plain git server. Push them again.
+  In shadow mode the write proceeds unrecorded, and counts in
+  `graft_storage_shadow_errors_total`.
 - **A repository removed on another node.** The local copy has a watermark
   whose key the database no longer has; it is moved into the storage's
   temporary directory, and the repository is reported missing on that node too.
