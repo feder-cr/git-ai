@@ -5,10 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/feder-cr/git-ai/internal/graft/corestore"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/sqlstore"
+	"github.com/stretchr/testify/require"
 )
 
 func nameOfLength(length int) string {

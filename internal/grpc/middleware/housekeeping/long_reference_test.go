@@ -4,15 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sirupsen/logrus"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-
 	"github.com/feder-cr/git-ai/internal/git/localrepo"
 	"github.com/feder-cr/git-ai/internal/grpc/protoregistry"
 	"github.com/feder-cr/git-ai/internal/structerr"
 	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
 // failingStream refuses the first message, as an interceptor below this one does.

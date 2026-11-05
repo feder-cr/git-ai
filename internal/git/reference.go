@@ -198,9 +198,18 @@ func ValidateRepositoryReferenceNameLength(name string, inObjectPool bool) error
 }
 
 // IsReferenceNameLengthRefusal reports whether the output of a git process holds the refusal of a
-// reference name by its length, which the reference-transaction hook writes to its stderr.
+// reference name by its length, which the reference-transaction hook writes to its stderr. A line that
+// git got from the remote, which it prefixes with "remote:" after each newline and carriage return, says
+// what the remote wants it to say and does not count.
 func IsReferenceNameLengthRefusal(stderr []byte) bool {
-	return bytes.Contains(stderr, []byte(referenceNameLengthPhrase))
+	lines := bytes.FieldsFunc(stderr, func(r rune) bool { return r == '\n' || r == '\r' })
+	for _, line := range lines {
+		if !bytes.HasPrefix(line, []byte("remote:")) && bytes.Contains(line, []byte(referenceNameLengthPhrase)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ValidateReference checks whether a reference looks valid. It aims to be a faithful implementation of Git's own

@@ -48,4 +48,7 @@ func TestIsReferenceNameLengthRefusal(t *testing.T) {
 	refusal := ValidateReferenceNameLength(strings.Repeat("x", 1025))
 	require.True(t, IsReferenceNameLengthRefusal([]byte("error: "+refusal.Error()+"\nfatal: ref updates aborted by hook\n")))
 	require.False(t, IsReferenceNameLengthRefusal([]byte("fatal: ref updates aborted by hook\n")))
+	require.False(t, IsReferenceNameLengthRefusal([]byte("remote: "+refusal.Error()+"\nfatal: ref updates aborted by hook\n")))
+	require.False(t, IsReferenceNameLengthRefusal([]byte("remote: progress\rremote: "+refusal.Error()+"\r\n")))
+	require.True(t, IsReferenceNameLengthRefusal([]byte("remote: progress\n"+refusal.Error()+"\n")))
 }

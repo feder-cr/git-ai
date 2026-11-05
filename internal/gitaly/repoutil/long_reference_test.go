@@ -3,11 +3,8 @@ package repoutil
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/feder-cr/git-ai/internal/git/catfile"
 	"github.com/feder-cr/git-ai/internal/git/gittest"
@@ -18,6 +15,9 @@ import (
 	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/internal/testhelper/testcfg"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestCreate_longReferenceNames seeds the temporary repository by writing its packed-refs file, as a
@@ -113,4 +113,31 @@ func TestCreate_longReferenceNames(t *testing.T) {
 		require.NoError(t, err)
 		gittest.RequireReferenceNameLengths(t, cfg, path, 1024)
 	})
+}
+
+// TestValidateForEachRefLine judges lines as text: no git process sees these names.
+func TestValidateForEachRefLine(t *testing.T) {
+	t.Parallel()
+
+	const refused = "over the limit of 1024 bytes"
+	short := "refs/heads/main"
+	limit := gittest.ReferenceNameOfLength(t, "refs/heads/", 1024).String()
+	long := gittest.ReferenceNameOfLength(t, "refs/heads/", 1025).String()
+
+	// git accepts these in a name. Each splits the name into parts under the limit when it is
+	// taken for a separator.
+	for _, whitespace := range []string{"\u00a0", "\u0085", "\u2003", "\u3000"} {
+		name := "refs/heads/" + strings.Repeat(strings.Repeat("x", 500)+whitespace, 3)
+		require.Greater(t, len(name), 1024)
+
+		require.ErrorContains(t, validateForEachRefLine(name+" \n", false), refused)
+		require.ErrorContains(t, validateForEachRefLine("refs/heads/alias "+name+"\n", false), refused)
+	}
+
+	require.NoError(t, validateForEachRefLine(limit+" "+limit+"\n", false))
+	require.NoError(t, validateForEachRefLine(short+" \n", false))
+	require.NoError(t, validateForEachRefLine("", false))
+	require.ErrorContains(t, validateForEachRefLine(long+" \n", false), refused)
+	require.ErrorContains(t, validateForEachRefLine(short+" "+long+"\n", false), refused)
+	require.ErrorContains(t, validateForEachRefLine(long, false), refused, "the last line may have no newline")
 }

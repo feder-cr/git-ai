@@ -5,14 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/feder-cr/git-ai/internal/git/gittest"
 	"github.com/feder-cr/git-ai/internal/graft/corestore"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/sqlstore"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestRefuseLongReferenceNames(t *testing.T) {
@@ -82,5 +81,32 @@ func TestImportRepository_longReferenceAfterACompleteImport(t *testing.T) {
 
 		_, err := h.client.ImportRepository(h.ctx, &gitalypb.ImportRepositoryRequest{Repository: h.repo})
 		require.NoError(t, err)
+	})
+}
+
+// TestImportRepository_longReferenceWithAnIncompleteRegistration is the way out documented in
+// doc/graft/LIMITATIONS.md: an earlier failed import left a registration, the refusal still holds, and
+// deleting the name with git on the node lets the import resume.
+func TestImportRepository_longReferenceWithAnIncompleteRegistration(t *testing.T) {
+	forEachCore(t, func(t *testing.T, mode corestore.Mode, dialect sqlstore.Dialect) {
+		h := setup(t, mode, dialect)
+		h.seed()
+
+		key := corestore.KeyOf(h.repo)
+		_, _, err := h.core.Meta.RegisterRepository(h.ctx, key, gittest.DefaultObjectHash.Format, corestore.InitialState{})
+		require.NoError(t, err)
+
+		long := gittest.ReferenceNameOfLength(t, "refs/heads/", 1025)
+		gittest.SeedPackedReference(t, h.repoPath, long, gittest.ResolveRevision(t, h.cfg, h.repoPath, "HEAD"))
+
+		_, err = h.client.ImportRepository(h.ctx, &gitalypb.ImportRepositoryRequest{Repository: h.repo})
+		require.Equal(t, codes.FailedPrecondition, status.Code(err), "%v", err)
+		require.ErrorContains(t, err, "over the limit of 1024 bytes")
+
+		gittest.Exec(t, h.cfg, "-C", h.repoPath, "update-ref", "--no-deref", "-d", long.String())
+
+		res, err := h.client.ImportRepository(h.ctx, &gitalypb.ImportRepositoryRequest{Repository: h.repo})
+		require.NoError(t, err)
+		require.NotZero(t, res.GetSequence())
 	})
 }

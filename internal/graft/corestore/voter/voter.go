@@ -28,9 +28,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"google.golang.org/grpc/codes"
-
 	"github.com/feder-cr/git-ai/internal/command"
 	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
@@ -46,6 +43,8 @@ import (
 	"github.com/feder-cr/git-ai/internal/log"
 	"github.com/feder-cr/git-ai/internal/structerr"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
+	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/grpc/codes"
 )
 
 // CrashEnv names the test-only environment variable that makes the voter

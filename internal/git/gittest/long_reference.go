@@ -7,11 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/gitaly/config"
 	"github.com/feder-cr/git-ai/internal/testhelper"
+	"github.com/stretchr/testify/require"
 )
 
 // ReferenceNameOfLength returns a reference name of exactly length bytes that starts with prefix. It
@@ -51,17 +50,27 @@ func SeedPackedReference(tb testing.TB, repoPath string, name git.ReferenceName,
 	require.NoError(tb, err)
 }
 
+// referenceNames returns the names of the references of a repository. They are split on newlines only,
+// as a name may hold whitespace other than the ASCII space.
+func referenceNames(tb testing.TB, cfg config.Cfg, repoPath string) []string {
+	tb.Helper()
+
+	output := strings.TrimSuffix(string(Exec(tb, cfg, "-C", repoPath, "for-each-ref", "--format=%(refname)")), "\n")
+	if output == "" {
+		return nil
+	}
+
+	return strings.Split(output, "\n")
+}
+
 // RequireReferenceNameLengths asserts the lengths of the names of all the references of a repository,
 // in any order, so that a failure does not print names of a thousand bytes.
 func RequireReferenceNameLengths(tb testing.TB, cfg config.Cfg, repoPath string, expected ...int) {
 	tb.Helper()
 
 	lengths := []int{}
-	output := strings.TrimSpace(string(Exec(tb, cfg, "-C", repoPath, "for-each-ref", "--format=%(refname)")))
-	if output != "" {
-		for _, name := range strings.Split(output, "\n") {
-			lengths = append(lengths, len(name))
-		}
+	for _, name := range referenceNames(tb, cfg, repoPath) {
+		lengths = append(lengths, len(name))
 	}
 
 	require.ElementsMatch(tb, append([]int{}, expected...), lengths)
@@ -72,7 +81,7 @@ func RequireReferenceNameLengths(tb testing.TB, cfg config.Cfg, repoPath string,
 func RequireNoReferenceNameOverLimit(tb testing.TB, cfg config.Cfg, repoPath string) {
 	tb.Helper()
 
-	for _, name := range strings.Fields(string(Exec(tb, cfg, "-C", repoPath, "for-each-ref", "--format=%(refname)"))) {
+	for _, name := range referenceNames(tb, cfg, repoPath) {
 		require.LessOrEqual(tb, len(name), git.MaxReferenceNameLength, "a reference name over the limit was written")
 	}
 }

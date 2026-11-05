@@ -62,12 +62,6 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 		m.storageVoter.TransactionStarts(ctx, payload)
 	}
 
-	// Every reference update that git performs with this hook passes here first, before git locks
-	// or writes anything and whatever asked for it (a fetch, for example, takes its names from the
-	// remote). A failed hook makes git abort the whole transaction.
-	if state == ReferenceTransactionPreparing {
-	}
-
 	// Every reference update that git performs with this hook passes here before git writes it,
 	// whatever asked for it (a fetch, for example, takes its names from the remote). A failed hook
 	// makes git abort the whole transaction. The prepared phase is the one that always reaches the

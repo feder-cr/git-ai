@@ -4,11 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"github.com/feder-cr/git-ai/internal/git"
 )
 
 func TestReferenceNameLengthRefusal(t *testing.T) {

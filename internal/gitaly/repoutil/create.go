@@ -343,13 +343,10 @@ func validateReferenceNameLengths(ctx context.Context, repo *localrepo.Repo, inO
 
 	for lines := bufio.NewReader(cmd); ; {
 		line, readErr := lines.ReadString('\n')
-		// Neither a reference name nor a symbolic target holds a space.
-		for name := range strings.FieldsSeq(line) {
-			if err := git.ValidateRepositoryReferenceNameLength(name, inObjectPool); err != nil {
-				cancel()
-				_ = cmd.Wait()
-				return structerr.NewInvalidArgument("%w", err)
-			}
+		if err := validateForEachRefLine(line, inObjectPool); err != nil {
+			cancel()
+			_ = cmd.Wait()
+			return structerr.NewInvalidArgument("%w", err)
 		}
 		if readErr != nil {
 			break
@@ -358,6 +355,18 @@ func validateReferenceNameLengths(ctx context.Context, repo *localrepo.Repo, inO
 
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("listing references: %w, stderr: %q", err, stderr.String())
+	}
+
+	return nil
+}
+
+// validateForEachRefLine judges a "<name> <symbolic target>" line of git-for-each-ref(1). Only the ASCII
+// space separates the fields: a name holds no ASCII space, but may hold other whitespace such as U+00A0.
+func validateForEachRefLine(line string, inObjectPool bool) error {
+	for name := range strings.SplitSeq(strings.TrimSuffix(line, "\n"), " ") {
+		if err := git.ValidateRepositoryReferenceNameLength(name, inObjectPool); err != nil {
+			return err
+		}
 	}
 
 	return nil

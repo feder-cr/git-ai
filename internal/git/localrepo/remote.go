@@ -161,10 +161,7 @@ func (repo *Repo) FetchRemote(ctx context.Context, remoteName string, opts Fetch
 	}
 
 	if err := cmd.Wait(); err != nil {
-		if refusal := gitcmd.ReferenceNameLengthRefusal(stderr.Bytes()); refusal != nil {
-			return FetchFailedError{refusal}
-		}
-		return FetchFailedError{errorWithStderr(err, stderr.Bytes())}
+		return opts.fetchFailed(err, stderr.Bytes())
 	}
 
 	return nil
@@ -229,13 +226,23 @@ func (repo *Repo) FetchInternal(
 		},
 		commandOptions...,
 	); err != nil {
-		if refusal := gitcmd.ReferenceNameLengthRefusal(stderr.Bytes()); refusal != nil {
-			return FetchFailedError{refusal}
-		}
-		return FetchFailedError{errorWithStderr(err, stderr.Bytes())}
+		return opts.fetchFailed(err, stderr.Bytes())
 	}
 
 	return nil
+}
+
+// fetchFailed returns the error of a fetch that failed with err and stderr. The hook's refusal of a
+// reference name by its length is a permanent error. Without transactions no hook ran, so stderr can
+// only hold text from elsewhere.
+func (opts FetchOpts) fetchFailed(err error, stderr []byte) error {
+	if !opts.DisableTransactions {
+		if refusal := gitcmd.ReferenceNameLengthRefusal(stderr); refusal != nil {
+			return FetchFailedError{refusal}
+		}
+	}
+
+	return FetchFailedError{errorWithStderr(err, stderr)}
 }
 
 func (opts FetchOpts) buildFlags() []gitcmd.Option {
