@@ -284,6 +284,27 @@ func resolveStartBranch(
 	return commit, nil
 }
 
+// resolveStartBranchLocally is resolveStartBranch in repo: the one rule by which a request names the
+// commit that its work starts from, for the start points of RPCs in every field that holds one.
+func resolveStartBranchLocally(ctx context.Context, repo *localrepo.Repo, name string) (git.ObjectID, error) {
+	objectHash, err := repo.ObjectHash(ctx)
+	if err != nil {
+		return "", structerr.NewInternal("detecting object hash: %w", err)
+	}
+
+	return resolveStartBranch(name, objectHash,
+		func(name git.ReferenceName) (git.ObjectID, error) {
+			return repo.ResolveReferenceExactly(ctx, name)
+		},
+		func(name git.ReferenceName) (bool, error) {
+			return repo.ReflogExists(ctx, name)
+		},
+		func(revision git.Revision) (git.ObjectID, error) {
+			return repo.ResolveRevision(ctx, revision)
+		},
+	)
+}
+
 // errStartPointPath is the error of a start point that names a path (<revision>:path), not a commit.
 var errStartPointPath = errors.New("the start point names a path, not a commit")
 
@@ -416,47 +437,38 @@ func (s *Server) fetchStartRevision(
 		startBranchName = req.GetBranchName()
 	}
 
-	// The start branch is read in the start repository, or in the local one without it.
-	objectHashOf := localRepo.ObjectHash
-	read := func(name git.ReferenceName) (git.ObjectID, error) {
-		return localRepo.ResolveReferenceExactly(ctx, name)
-	}
-	reflogExists := func(name git.ReferenceName) (bool, error) {
-		return localRepo.ReflogExists(ctx, name)
-	}
-	resolve := func(revision git.Revision) (git.ObjectID, error) {
-		return localRepo.ResolveRevision(ctx, revision)
-	}
-	if startRepository := req.GetStartRepository(); startRepository != nil {
-		remoteRepo, err := remoterepo.New(ctx, startRepository, s.conns)
+	if req.GetStartRepository() == nil {
+		startRevision, err := resolveStartBranchLocally(ctx, localRepo, string(startBranchName))
 		if err != nil {
-			return "", structerr.NewInternal("%w", err)
+			return "", startRefError(err)
 		}
-		objectHashOf = remoteRepo.ObjectHash
-		read = func(name git.ReferenceName) (git.ObjectID, error) {
-			return remoteRepo.ReadReference(ctx, name)
-		}
-		// No RPC tells whether a reference of the start repository has a reflog of its own, so a
-		// reflog entry of one is not taken there: git could read a decoy's reflog for it.
-		reflogExists = func(git.ReferenceName) (bool, error) {
-			return false, nil
-		}
-		resolve = func(revision git.Revision) (git.ObjectID, error) {
-			return remoteRepo.ResolveRevision(ctx, revision)
-		}
+		return startRevision, nil
 	}
-	objectHash, err := objectHashOf(ctx)
+
+	remoteRepo, err := remoterepo.New(ctx, req.GetStartRepository(), s.conns)
+	if err != nil {
+		return "", structerr.NewInternal("%w", err)
+	}
+	objectHash, err := remoteRepo.ObjectHash(ctx)
 	if err != nil {
 		return "", structerr.NewInternal("detecting object hash: %w", err)
 	}
 
-	startRevision, err := resolveStartBranch(string(startBranchName), objectHash, read, reflogExists, resolve)
+	startRevision, err := resolveStartBranch(string(startBranchName), objectHash,
+		func(name git.ReferenceName) (git.ObjectID, error) {
+			return remoteRepo.ReadReference(ctx, name)
+		},
+		// No RPC tells whether a reference of the start repository has a reflog of its own, so a
+		// reflog entry of one is not taken there: git could read a decoy's reflog for it.
+		func(git.ReferenceName) (bool, error) {
+			return false, nil
+		},
+		func(revision git.Revision) (git.ObjectID, error) {
+			return remoteRepo.ResolveRevision(ctx, revision)
+		},
+	)
 	if err != nil {
 		return "", startRefError(err)
-	}
-
-	if req.GetStartRepository() == nil {
-		return startRevision, nil
 	}
 
 	_, err = localRepo.ResolveRevision(ctx, startRevision.Revision()+"^{commit}")

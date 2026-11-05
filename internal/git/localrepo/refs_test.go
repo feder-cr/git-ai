@@ -18,6 +18,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/testhelper/testcfg"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 )
 
 func TestRepo_ContainsRef(t *testing.T) {
@@ -229,6 +230,139 @@ func TestRepo_ResolveReferenceExactly(t *testing.T) {
 			require.Equal(t, tc.expected, oid)
 		})
 	}
+}
+
+// TestRepo_WrittenReference checks which reference an update of a name writes, by asking git: the
+// answer is compared with what `git update-ref` then moves, so that the two cannot disagree.
+func TestRepo_WrittenReference(t *testing.T) {
+	t.Parallel()
+
+	ctx := testhelper.Context(t)
+	cfg, repo, repoPath := setupRepo(t, withDisabledHooks())
+
+	commit := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch("main"))
+	next := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(commit))
+	gittest.WriteRef(t, cfg, repoPath, "refs/heads/target", commit)
+	gittest.WriteRef(t, cfg, repoPath, "refs/heads/refs/heads/missing", commit)
+	gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/one", "refs/heads/target")
+	gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/chain", "refs/heads/one")
+	gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/dangling", "refs/graft/absent")
+
+	for _, tc := range []struct {
+		reference git.ReferenceName
+		expected  git.ReferenceName
+	}{
+		{reference: "refs/heads/main", expected: "refs/heads/main"},
+		{reference: "refs/heads/one", expected: "refs/heads/target"},
+		{reference: "refs/heads/chain", expected: "refs/heads/target"},
+		{reference: "refs/heads/dangling", expected: "refs/graft/absent"},
+		// A missing name is that name, not one of git's DWIM rules.
+		{reference: "refs/heads/missing", expected: "refs/heads/missing"},
+		// Not a name git can write: it is returned for the update to refuse.
+		{reference: "refs/heads/not..valid", expected: "refs/heads/not..valid"},
+	} {
+		t.Run(tc.reference.String(), func(t *testing.T) {
+			written, err := repo.WrittenReference(ctx, tc.reference)
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, written)
+		})
+	}
+
+	t.Run("packed references", func(t *testing.T) {
+		gittest.Exec(t, cfg, "-C", repoPath, "pack-refs", "--all")
+
+		for reference, expected := range map[git.ReferenceName]git.ReferenceName{
+			"refs/heads/main":  "refs/heads/main",
+			"refs/heads/one":   "refs/heads/target",
+			"refs/heads/chain": "refs/heads/target",
+			// A name below a branch, and a directory of references, are not symbolic either.
+			"refs/heads/main/below": "refs/heads/main/below",
+			"refs/heads":            "refs/heads",
+		} {
+			written, err := repo.WrittenReference(ctx, reference)
+			require.NoError(t, err)
+			require.Equal(t, expected, written, reference)
+		}
+	})
+
+	t.Run("what git update-ref moves", func(t *testing.T) {
+		written, err := repo.WrittenReference(ctx, "refs/heads/chain")
+		require.NoError(t, err)
+
+		gittest.Exec(t, cfg, "-C", repoPath, "update-ref", "refs/heads/chain", next.String(), commit.String())
+		require.Equal(t, next.String(), text.ChompBytes(gittest.Exec(t, cfg, "-C", repoPath, "rev-parse", "--verify", written.String())))
+		gittest.Exec(t, cfg, "-C", repoPath, "update-ref", "refs/heads/chain", commit.String(), next.String())
+	})
+
+	t.Run("a cycle", func(t *testing.T) {
+		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/cycle-a", "refs/heads/cycle-b")
+		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/cycle-b", "refs/heads/cycle-a")
+
+		_, err := repo.WrittenReference(ctx, "refs/heads/cycle-a")
+		testhelper.RequireGrpcCode(t, err, codes.FailedPrecondition)
+	})
+
+	t.Run("a name too long for the file system", func(t *testing.T) {
+		long := git.ReferenceName("refs/heads/" + strings.Repeat("x", 300))
+		written, err := repo.WrittenReference(ctx, long)
+		require.NoError(t, err)
+		require.Equal(t, long, written)
+	})
+
+	t.Run("a chain of symbolic references up to what git follows", func(t *testing.T) {
+		gittest.WriteRef(t, cfg, repoPath, "refs/heads/end", commit)
+		previous := "refs/heads/end"
+		for hops := 1; hops <= 7; hops++ {
+			name := fmt.Sprintf("refs/heads/hop-%d", hops)
+			gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", name, previous)
+			previous = name
+
+			written, err := repo.WrittenReference(ctx, git.ReferenceName(name))
+			if hops <= maxSymbolicHops {
+				require.NoError(t, err, "%d hops", hops)
+				require.Equal(t, git.ReferenceName("refs/heads/end"), written, "%d hops", hops)
+			} else {
+				testhelper.RequireGrpcCode(t, err, codes.FailedPrecondition)
+				require.Empty(t, written, "%d hops", hops)
+			}
+		}
+	})
+}
+
+// maxSymbolicHops is the longest chain of symbolic references that git-symbolic-ref(1) reads to its
+// end. It is git's limit, read by the test of WrittenReference; a new git that moves it fails there.
+const maxSymbolicHops = 4
+
+// TestRepo_WrittenReference_looseFiles checks what only the files backend reads by itself.
+func TestRepo_WrittenReference_looseFiles(t *testing.T) {
+	t.Parallel()
+	testhelper.SkipWithReftable(t, "the references are not files")
+
+	ctx := testhelper.Context(t)
+	cfg, repo, repoPath := setupRepo(t, withDisabledHooks())
+	commit := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch("main"))
+
+	t.Run("a symbolic link", func(t *testing.T) {
+		require.NoError(t, os.Symlink("refs/heads/main", filepath.Join(repoPath, "refs/heads/link")))
+
+		written, err := repo.WrittenReference(ctx, "refs/heads/link")
+		require.NoError(t, err)
+		require.Equal(t, git.ReferenceName("refs/heads/main"), written)
+	})
+
+	t.Run("a failed read does not tell where the repository is", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root reads every file")
+		}
+		gittest.WriteRef(t, cfg, repoPath, "refs/heads/unreadable", commit)
+		path := filepath.Join(repoPath, "refs/heads/unreadable")
+		require.NoError(t, os.Chmod(path, 0))
+		t.Cleanup(func() { require.NoError(t, os.Chmod(path, 0o644)) })
+
+		_, err := repo.WrittenReference(ctx, "refs/heads/unreadable")
+		require.ErrorIs(t, err, os.ErrPermission)
+		require.NotContains(t, err.Error(), repoPath)
+	})
 }
 
 // TestRepo_GetDefaultBranchReadsCandidatesExactly checks that the candidates of the default branch

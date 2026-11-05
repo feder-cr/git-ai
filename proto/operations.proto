@@ -19,7 +19,7 @@ service OperationService {
   // hooks and contacts Rails to verify that the user is allowed to create the branch. The
   // following known error conditions may happen:
   //
-  // - `FailedPrecondition` if the Git revision provided in start_point can't be found or updated.
+  // - `FailedPrecondition` if start_point can't be resolved to a commit or the branch can't be updated.
   // - `InvalidArgument` if the commit ID resolved from the start_point can't be parsed.
   // - `PermissionDenied` with an embedded `UserCreateBranchError` if any custom hooks return a
   //    non-zero exit code.
@@ -263,8 +263,11 @@ message UserCreateBranchRequest {
   // user to execute the action as. Also used to perform authentication and
   // authorization via an external endpoint.
   User user = 3;
-  // start_point is the Git revision to start the branch at. See the gitrevisions(1)
-  // man pages for supported syntax.
+  // start_point is the commit to start the branch at, read as the start points of the other RPCs
+  // are: a full object ID is that object; a name that starts with refs/ is that exact reference; any
+  // other name follows gitrevisions(1), except that an existing branch beats a tag or a reference
+  // refs/<name> of the same name, unless the name starts with heads/, tags/ or remotes/. A suffix
+  // such as ~1, ^{commit} or @{1} applies to it. <revision>:path and :/<text> are refused.
   bytes start_point = 4;
 }
 

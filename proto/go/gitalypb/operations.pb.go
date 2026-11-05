@@ -396,8 +396,11 @@ type UserCreateBranchRequest struct {
 	// user to execute the action as. Also used to perform authentication and
 	// authorization via an external endpoint.
 	User *User `protobuf:"bytes,3,opt,name=user,proto3" json:"user,omitempty"`
-	// start_point is the Git revision to start the branch at. See the gitrevisions(1)
-	// man pages for supported syntax.
+	// start_point is the commit to start the branch at, read as the start points of the other RPCs
+	// are: a full object ID is that object; a name that starts with refs/ is that exact reference; any
+	// other name follows gitrevisions(1), except that an existing branch beats a tag or a reference
+	// refs/<name> of the same name, unless the name starts with heads/, tags/ or remotes/. A suffix
+	// such as ~1, ^{commit} or @{1} applies to it. <revision>:path and :/<text> are refused.
 	StartPoint    []byte `protobuf:"bytes,4,opt,name=start_point,json=startPoint,proto3" json:"start_point,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

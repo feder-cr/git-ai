@@ -532,6 +532,9 @@ func (m *GitLabHookManager) enforceGraftPolicy(ctx context.Context, env []string
 		fields["policy_generation"] = policy.Generation
 		fields["policy_sha256"] = policy.SHA256
 	}
+	if decision.reference != "" {
+		fields["reference"] = decision.reference
+	}
 	if decision.denial != "" {
 		fields["reason"] = decision.denial
 		m.logger.WithFields(fields).InfoContext(ctx, "agent reference update denied")
@@ -551,6 +554,8 @@ type graftDecision struct {
 	// evaluated tells whether the rules of the policy decided, rather than the reservation of
 	// refs/graft/ or the skips.
 	evaluated bool
+	// reference is the reference the reservation refused, for the log: the denial does not name it.
+	reference string
 	// actor is the agent of the update, when the metadata names one.
 	actor string
 }
@@ -603,8 +608,8 @@ func (m *GitLabHookManager) graftPolicyDecision(policy *policystore.Snapshot, en
 	// is held to the reservation too, before the batch skip below: a batch only ever updates
 	// its branch, and this keeps it so whatever builds it.
 	if batch || agent {
-		if message := graftReservedDenial(changes); message != "" {
-			return graftDecision{denial: message, actor: meta.Actor}, nil
+		if message, reference := graftReservedDenial(changes); message != "" {
+			return graftDecision{denial: message, reference: reference, actor: meta.Actor}, nil
 		}
 	}
 
@@ -644,9 +649,8 @@ func CheckAgentPolicy(ctx context.Context, graft config.Graft, changes string) e
 	if !ok || id.Source != identity.SourceAgent {
 		return nil
 	}
-	// The reservation of refs/graft/ holds in every mode, as in the hook.
-	if message := graftReservedDenial([]byte(changes)); message != "" {
-		return structerr.NewPermissionDenied("%s", message)
+	if err := CheckAgentReservation(ctx, changes); err != nil {
+		return err
 	}
 	if !graft.Standalone || len(graft.Policy) == 0 {
 		return nil
@@ -664,25 +668,62 @@ func CheckAgentPolicy(ctx context.Context, graft config.Graft, changes string) e
 	return nil
 }
 
+// CheckAgentReservation refuses the reference updates in changes, in the "<old-oid> <new-oid> <ref>"
+// per-line format, that the reservations forbid a caller that authenticated with a per-agent token,
+// in every mode, as the hook does. UpdaterWithHooks asks before it runs any hook: what a hook reports,
+// such as the changes of an access check, names the target of a symbolic branch, which an agent may
+// not be able to see.
+func CheckAgentReservation(ctx context.Context, changes string) error {
+	id, ok := identity.FromContext(ctx)
+	if !ok || id.Source != identity.SourceAgent {
+		return nil
+	}
+	if message, _ := graftReservedDenial([]byte(changes)); message != "" {
+		return structerr.NewPermissionDenied("%s", message)
+	}
+	return nil
+}
+
 // GraftReservedRefPrefix is the namespace of the references that only the server writes: the
 // proposals of a land (refs/graft/proposals/) and graft-verify's green references, which it
 // writes with the shared token. An agent never creates, updates or deletes a reference under it,
 // whatever the policy says and in every mode. The layers that refuse it, in the order a write
 // meets them: the request filter of the agent interceptor (a request that names it), git's
-// receive.hideRefs on a push, CheckAgentPolicy in the RPCs that skip the pre-receive hook, and
-// last the reference-transaction hook (graftPolicyDecision), which sees the references git
-// actually updates, the target of a symbolic reference included. See doc/graft/AGENT-SECURITY.md.
+// receive.hideRefs on a push, CheckAgentPolicy in the RPCs that skip the pre-receive hook,
+// CheckAgentReservation in those that run the hooks themselves, and last the reference-transaction
+// hook (graftPolicyDecision), which is told the references actually updated, by git or by
+// UpdaterWithHooks, the target of a symbolic reference included. See doc/graft/AGENT-SECURITY.md.
 const GraftReservedRefPrefix = "refs/graft/"
 
-// graftReservedDenial returns the denial of changes that update a reference under
-// GraftReservedRefPrefix, or "".
-func graftReservedDenial(changes []byte) string {
+// graftDecoyRefPrefixes are the namespaces whose references git's DWIM rules take for a full name:
+// refs/tags/refs/heads/x answers a revision lookup of refs/heads/x while that does not exist. An agent
+// neither creates nor updates a reference under them, in every mode. It may delete one, so that one
+// from before this rule can be cleaned up. The server reads its own references by their exact names,
+// but a consumer that reads a revision may not.
+var graftDecoyRefPrefixes = []string{"refs/refs/", "refs/tags/refs/", "refs/heads/refs/", "refs/remotes/refs/"}
+
+// graftReservedDenial returns the denial of changes that update a reference an agent may not update,
+// and that reference, or "". The denial does not name the reference: an agent that wrote through a
+// symbolic branch named something else, and the target may be hidden from it.
+func graftReservedDenial(changes []byte) (message, reference string) {
 	for _, line := range strings.Split(string(changes), "\n") {
-		if _, _, reference, ok := refchange.ParseHookLine(line); ok && strings.HasPrefix(reference, GraftReservedRefPrefix) {
-			return fmt.Sprintf("%q is under %s, which is reserved for the server: agents may not update it", reference, GraftReservedRefPrefix)
+		_, newValue, name, ok := refchange.ParseHookLine(line)
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(name, GraftReservedRefPrefix) {
+			return fmt.Sprintf("a reference under %s is reserved for the server: agents may not update it", GraftReservedRefPrefix), name
+		}
+		if strings.Trim(newValue, "0") == "" {
+			continue
+		}
+		for _, prefix := range graftDecoyRefPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return fmt.Sprintf("a reference under %s can answer for another reference: agents may not create or update it", prefix), name
+			}
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // isForceDeletionsOnly determines whether the given changes only consist of force-deletions.

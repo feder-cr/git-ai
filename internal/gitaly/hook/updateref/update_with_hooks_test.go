@@ -21,6 +21,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/gitaly/hook/updateref"
 	"github.com/feder-cr/git-ai/internal/gitaly/service"
 	hookservice "github.com/feder-cr/git-ai/internal/gitaly/service/hook"
+	"github.com/feder-cr/git-ai/internal/helper/text"
 	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/internal/testhelper/testcfg"
 	"github.com/feder-cr/git-ai/internal/testhelper/testserver"
@@ -380,6 +381,160 @@ func TestUpdaterWithHooks_UpdateReference_abortsTransaction(t *testing.T) {
 			require.Equal(t, commitID.String(), ref.Target)
 		})
 	}
+}
+
+// recordingHooks is a hook manager that records the reference each hook was told about, and runs
+// duringPreReceive inside the first hook, when the update has been decided on and not yet written.
+type recordingHooks struct {
+	seen map[string]string
+}
+
+func newRecordingHooks(t *testing.T, duringPreReceive func()) (*recordingHooks, hook.Manager) {
+	t.Helper()
+
+	recording := &recordingHooks{seen: map[string]string{}}
+	record := func(t *testing.T, phase string, stdin io.Reader) {
+		changes, err := io.ReadAll(stdin)
+		require.NoError(t, err)
+		fields := strings.Fields(string(changes))
+		require.Len(t, fields, 3, "one change: %q", changes)
+		recording.seen[phase] = fields[2]
+	}
+
+	return recording, hook.NewMockManager(t,
+		func(t *testing.T, ctx context.Context, repo *gitalypb.Repository, pushOptions, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			record(t, "pre-receive", stdin)
+			if duringPreReceive != nil {
+				duringPreReceive()
+			}
+			return nil
+		},
+		func(t *testing.T, ctx context.Context, repo *gitalypb.Repository, pushOptions, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			record(t, "post-receive", stdin)
+			return nil
+		},
+		func(t *testing.T, ctx context.Context, repo *gitalypb.Repository, ref, oldValue, newValue string, env []string, stdout, stderr io.Writer) error {
+			recording.seen["update"] = ref
+			return nil
+		},
+		func(t *testing.T, ctx context.Context, state hook.ReferenceTransactionState, env []string, stdin io.Reader) error {
+			record(t, fmt.Sprintf("reference-transaction %d", state), stdin)
+			return nil
+		},
+	)
+}
+
+// everyHookSaw is what recordingHooks holds after an update of reference that committed.
+func everyHookSaw(reference string) map[string]string {
+	return map[string]string{
+		"pre-receive":  reference,
+		"update":       reference,
+		"post-receive": reference,
+		fmt.Sprintf("reference-transaction %d", hook.ReferenceTransactionPreparing): reference,
+		fmt.Sprintf("reference-transaction %d", hook.ReferenceTransactionPrepared):  reference,
+		fmt.Sprintf("reference-transaction %d", hook.ReferenceTransactionCommitted): reference,
+	}
+}
+
+// TestUpdaterWithHooks_UpdateReference_symbolicReference checks that the hooks, which decide on the
+// update, are told about the reference that is written: for a symbolic reference, its target.
+func TestUpdaterWithHooks_UpdateReference_symbolicReference(t *testing.T) {
+	t.Parallel()
+
+	ctx := testhelper.Context(t)
+	cfg := testcfg.Build(t)
+
+	setup := func(t *testing.T) (*gitalypb.Repository, string, git.ObjectID, git.ObjectID) {
+		repo, repoPath := gittest.CreateRepository(t, ctx, cfg, gittest.CreateRepositoryConfig{SkipCreationViaService: true})
+		oldCommit := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch("main"))
+		newCommit := gittest.WriteCommit(t, cfg, repoPath, gittest.WithParents(oldCommit))
+		gittest.WriteRef(t, cfg, repoPath, "refs/heads/target", oldCommit)
+		gittest.WriteRef(t, cfg, repoPath, "refs/heads/elsewhere", oldCommit)
+		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/alias", "refs/heads/target")
+		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/chain", "refs/heads/alias")
+		return repo, repoPath, oldCommit, newCommit
+	}
+	update := func(t *testing.T, repo *gitalypb.Repository, hookManager hook.Manager, reference git.ReferenceName, newCommit, oldCommit git.ObjectID) error {
+		updater := updateref.NewUpdaterWithHooks(cfg, testhelper.NewLogger(t), config.NewLocator(cfg), hookManager, gittest.NewCommandFactory(t, cfg), nil)
+		return updater.UpdateReference(ctx, repo, gittest.TestUser, nil, reference, newCommit, oldCommit)
+	}
+	value := func(t *testing.T, repoPath string, reference string) string {
+		return text.ChompBytes(gittest.Exec(t, cfg, "-C", repoPath, "rev-parse", "--verify", reference))
+	}
+
+	for _, tc := range []struct {
+		desc      string
+		reference git.ReferenceName
+		written   string
+	}{
+		{desc: "a branch", reference: "refs/heads/target", written: "refs/heads/target"},
+		{desc: "a symbolic branch", reference: "refs/heads/alias", written: "refs/heads/target"},
+		{desc: "a chain of symbolic branches", reference: "refs/heads/chain", written: "refs/heads/target"},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			t.Parallel()
+
+			repo, repoPath, oldCommit, newCommit := setup(t)
+			recording, hookManager := newRecordingHooks(t, nil)
+
+			require.NoError(t, update(t, repo, hookManager, tc.reference, newCommit, oldCommit))
+			require.Equal(t, everyHookSaw(tc.written), recording.seen)
+			require.Equal(t, newCommit.String(), value(t, repoPath, tc.written))
+			require.Equal(t, "refs/heads/target", text.ChompBytes(gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/alias")), "the symbolic branch stays symbolic")
+		})
+	}
+
+	t.Run("a dangling symbolic branch is written at its target", func(t *testing.T) {
+		t.Parallel()
+
+		repo, repoPath, _, newCommit := setup(t)
+		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/dangling", "refs/keep/absent")
+		recording, hookManager := newRecordingHooks(t, nil)
+
+		require.NoError(t, update(t, repo, hookManager, "refs/heads/dangling", newCommit, gittest.DefaultObjectHash.ZeroOID))
+		require.Equal(t, everyHookSaw("refs/keep/absent"), recording.seen)
+		require.Equal(t, newCommit.String(), value(t, repoPath, "refs/keep/absent"))
+	})
+
+	t.Run("a symbolic branch retargeted after the hooks decided writes what they decided on", func(t *testing.T) {
+		t.Parallel()
+
+		repo, repoPath, oldCommit, newCommit := setup(t)
+		recording, hookManager := newRecordingHooks(t, func() {
+			gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/alias", "refs/heads/elsewhere")
+		})
+
+		require.NoError(t, update(t, repo, hookManager, "refs/heads/alias", newCommit, oldCommit))
+		require.Equal(t, everyHookSaw("refs/heads/target"), recording.seen)
+		require.Equal(t, newCommit.String(), value(t, repoPath, "refs/heads/target"))
+		require.Equal(t, oldCommit.String(), value(t, repoPath, "refs/heads/elsewhere"))
+	})
+
+	t.Run("a target that turned symbolic after the hooks decided is not followed", func(t *testing.T) {
+		t.Parallel()
+
+		repo, repoPath, oldCommit, newCommit := setup(t)
+		_, hookManager := newRecordingHooks(t, func() {
+			gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/target", "refs/heads/elsewhere")
+		})
+
+		require.NoError(t, update(t, repo, hookManager, "refs/heads/alias", newCommit, oldCommit))
+		require.Equal(t, oldCommit.String(), value(t, repoPath, "refs/heads/elsewhere"), "nothing the hooks did not see moved")
+		require.Equal(t, newCommit.String(), value(t, repoPath, "refs/heads/target"))
+	})
+
+	t.Run("an error names the reference asked for", func(t *testing.T) {
+		t.Parallel()
+
+		repo, _, _, newCommit := setup(t)
+		_, hookManager := newRecordingHooks(t, nil)
+
+		// The old value does not match.
+		err := update(t, repo, hookManager, "refs/heads/alias", newCommit, newCommit)
+		var updateErr updateref.Error
+		require.ErrorAs(t, err, &updateErr)
+		require.Equal(t, git.ReferenceName("refs/heads/alias"), updateErr.Reference)
+	})
 }
 
 func TestUpdaterWithHooks_quarantine(t *testing.T) {

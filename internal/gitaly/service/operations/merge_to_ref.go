@@ -36,7 +36,9 @@ func (s *Server) UserMergeToRef(ctx context.Context, request *gitalypb.UserMerge
 		revision = git.Revision(request.GetFirstParentRef())
 	}
 
-	oid, err := repo.ResolveRevision(ctx, revision)
+	// The first parent is read as a start point is: a missing refs/heads/x is missing, whatever
+	// reference git's DWIM rules would take for it.
+	oid, err := resolveStartBranchLocally(ctx, repo, revision.String())
 	if err != nil {
 		return nil, structerr.NewInvalidArgument("Invalid merge source")
 	}
@@ -49,6 +51,10 @@ func (s *Server) UserMergeToRef(ctx context.Context, request *gitalypb.UserMerge
 	authorSignature, err := git.SignatureFromRequest(request)
 	if err != nil {
 		return nil, structerr.NewInvalidArgument("%w", err)
+	}
+
+	if err := refuseSymbolicTargetRef(ctx, repo, request.GetTargetRef()); err != nil {
+		return nil, err
 	}
 
 	// Initialize oldTargetOID from expected_old_oid when provided, otherwise
@@ -73,10 +79,6 @@ func (s *Server) UserMergeToRef(ctx context.Context, request *gitalypb.UserMerge
 				WithMetadata("old_object_id", expectedOldOID)
 		}
 	} else if targetRef, err := repo.GetReference(ctx, git.ReferenceName(request.GetTargetRef())); err == nil {
-		if targetRef.IsSymbolic {
-			return nil, structerr.NewFailedPrecondition("target reference is symbolic: %q", request.GetTargetRef())
-		}
-
 		oid, err := objectHash.FromHex(targetRef.Target)
 		if err != nil {
 			return nil, structerr.NewInternal("invalid target revision: %w", err)
@@ -169,6 +171,20 @@ func (s *Server) UserMergeToRef(ctx context.Context, request *gitalypb.UserMerge
 	return &gitalypb.UserMergeToRefResponse{
 		CommitId: mergeOID.String(),
 	}, nil
+}
+
+// refuseSymbolicTargetRef refuses a target reference that writes another reference: the RPCs that
+// take one validate its name, and a symbolic reference would take the write outside of what they
+// validated. It holds whether or not its target exists and whatever old value the request expects.
+func refuseSymbolicTargetRef(ctx context.Context, repo *localrepo.Repo, targetRef []byte) error {
+	written, err := repo.WrittenReference(ctx, git.ReferenceName(targetRef))
+	if err != nil {
+		return err
+	}
+	if written != git.ReferenceName(targetRef) {
+		return structerr.NewFailedPrecondition("target reference is symbolic: %q", targetRef)
+	}
+	return nil
 }
 
 func validateUserMergeToRefRequest(ctx context.Context, locator storage.Locator, in *gitalypb.UserMergeToRefRequest) error {
