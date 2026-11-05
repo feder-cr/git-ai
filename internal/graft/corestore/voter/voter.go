@@ -473,6 +473,7 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	// record (doc/graft/PLAN7.md, PACK OWNERSHIP RULE 4).
 	readAt := time.Now()
 	record, err := v.core.Meta.GetRepository(ctx, corestore.KeyOf(payload.Repo))
+	v.observePreparedStep(updates, stepRecord, time.Since(readAt))
 	if errors.Is(err, corestore.ErrRepositoryNotFound) {
 		if shadow {
 			v.metrics.untracked.Inc()
@@ -510,7 +511,9 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 		return structerr.NewFailedPrecondition("storage core: repository import is not complete; run ImportRepository again")
 	}
 
+	localRead := time.Now()
 	refUpdates, err := v.expectations(ctx, repo, updates, payload.IsHookRequested(gitcmd.PreReceiveHook))
+	v.observePreparedStep(updates, stepLocalRead, time.Since(localRead))
 	if err != nil {
 		var exists updateref.ReferenceAlreadyExistsError
 		if errors.As(err, &exists) {
@@ -527,7 +530,9 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	if prepared != nil && prepared.ok && prepared.repoID == record.ID && prepared.usable(time.Now()) {
 		pack = prepared.pack
 	} else {
+		built := time.Now()
 		pack, err = v.buildAndUpload(ctx, repo, payload.Repo.GetStorageName(), record, readAt, updates, false)
+		v.observePreparedStep(updates, stepPack, time.Since(built))
 		if err != nil {
 			return v.unavailable(err)
 		}
@@ -562,7 +567,9 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	}
 	defer cancel()
 
+	committing := time.Now()
 	res, err := v.core.Meta.CommitChangeset(commitCtx, in)
+	v.observePreparedStep(updates, stepCommit, time.Since(committing))
 
 	var conflict *corestore.ErrRefConflict
 	if errors.As(err, &conflict) {
@@ -608,7 +615,7 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 
 	if res.NoOp {
 		// git still writes the values the database already holds.
-		if err := v.deferDurability(ctx, payload, changes, shadow); err != nil {
+		if err := v.observedDeferDurability(ctx, payload, changes, shadow, updates); err != nil {
 			return v.unavailable(err)
 		}
 		result = resultNoOp
@@ -635,7 +642,7 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	// After the entry, so that a failure here counts as a local failure in the
 	// Aborted phase: the database holds the changeset, catch-up repairs the
 	// local repository.
-	if err := v.deferDurability(ctx, payload, changes, shadow); err != nil {
+	if err := v.observedDeferDurability(ctx, payload, changes, shadow, updates); err != nil {
 		return v.unavailable(err)
 	}
 
@@ -888,6 +895,43 @@ func (v *Voter) observeStep(updates []inputUpdate, step string, d time.Duration)
 		return
 	}
 	v.metrics.preparingSteps.WithLabelValues(transactionKind(updates), step).Observe(d.Seconds())
+}
+
+// The steps of the Prepared phase, while git holds the reference locks, that
+// graft_storage_prepared_step_seconds observes (doc/graft/STORAGE.md), besides
+// stepRecord (the read of the repository record) and stepPack (here the pack
+// built and uploaded when the Preparing phase did not prepare it).
+const (
+	// stepLocalRead is the read of the local references that the expected
+	// values need (expectations).
+	stepLocalRead = "local_read"
+	// stepCommit is the database commit of the changeset (CommitChangeset).
+	stepCommit = "commit"
+	// stepDurability is the durable dirty marker of deferred reference
+	// durability (deferDurability).
+	stepDurability = "durability"
+)
+
+// observePreparedStep observes d in step of graft_storage_prepared_step_seconds,
+// for the kind of the transaction of updates. Like observeStep, only
+// authoritative mode observes the steps.
+func (v *Voter) observePreparedStep(updates []inputUpdate, step string, d time.Duration) {
+	if !v.core.Authoritative() {
+		return
+	}
+	v.metrics.preparedSteps.WithLabelValues(transactionKind(updates), step).Observe(d.Seconds())
+}
+
+// observedDeferDurability is deferDurability, observed as stepDurability when
+// the durability is deferred (otherwise deferDurability does nothing).
+func (v *Voter) observedDeferDurability(ctx context.Context, payload gitcmd.HooksPayload, changes []byte, shadow bool, updates []inputUpdate) error {
+	if shadow || !v.DeferredReferenceDurability() {
+		return nil
+	}
+	start := time.Now()
+	err := v.deferDurability(ctx, payload, changes, shadow)
+	v.observePreparedStep(updates, stepDurability, time.Since(start))
+	return err
 }
 
 // fault calls FaultHook and exits the process when CrashEnv selects the point.
@@ -1508,6 +1552,9 @@ type metrics struct {
 	// steps (observeStep).
 	preparingSteps *prometheus.HistogramVec
 	prepared       prometheus.Histogram
+	// preparedSteps splits the Prepared phase of authoritative writes into its
+	// steps (observePreparedStep).
+	preparedSteps *prometheus.HistogramVec
 }
 
 func newMetrics() *metrics {
@@ -1558,6 +1605,15 @@ func newMetrics() *metrics {
 			Help:    "Time spent in the Prepared phase of the storage core write path, while git holds the reference locks.",
 			Buckets: prometheus.DefBuckets,
 		}),
+		preparedSteps: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "graft_storage_prepared_step_seconds",
+			Help: "Time of each step of the Prepared phase of authoritative writes, while git holds the reference " +
+				"locks: record (the read of the repository record), local_read (the local references the expected " +
+				"values need), pack (the pack, when the Preparing phase did not prepare it), commit (the database " +
+				"commit of the changeset) and durability (the dirty marker of deferred reference durability); kind " +
+				"is create for a transaction that only creates references, update otherwise.",
+			Buckets: []float64{.0005, .001, .002, .003, .005, .0075, .01, .015, .02, .03, .05, .075, .1, .25, .5, 1, 2.5},
+		}, []string{"kind", "step"}),
 	}
 }
 
@@ -1573,5 +1629,6 @@ func (m *metrics) collectors() []prometheus.Collector {
 		m.preparing,
 		m.preparingSteps,
 		m.prepared,
+		m.preparedSteps,
 	}
 }
