@@ -279,8 +279,10 @@ func TestUserLand_branchNameTooLongForTheIdentity(t *testing.T) {
 	branch := strings.TrimSuffix(strings.Repeat(strings.Repeat("a", 200)+"/", 35), "/")
 	_, err := client.UserLand(ctx, landRequest(fx.repoProto, branch, fx.change))
 	testhelper.RequireGrpcCode(t, err, codes.InvalidArgument)
-	require.ErrorContains(t, err, "is too long to record the identity of a land on it")
-	require.Less(t, len(err.Error()), 512, "the error quotes the beginning of the name, not all of it")
+	// A name this long is over the limit on reference names, which the server applies first.
+	// changelog.TestValidateLands covers the check of the identity's size itself.
+	require.ErrorContains(t, err, "over the limit of 1024 bytes")
+	require.Less(t, len(err.Error()), 512, "the error does not quote the whole name")
 }
 
 // TestLandBatch_intentAnswersWhatTheChangelogMisses lands two changes in one batch, loses the
