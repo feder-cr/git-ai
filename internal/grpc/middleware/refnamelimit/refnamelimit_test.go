@@ -187,6 +187,8 @@ var otherFields = map[protoreflect.FullName]string{
 	"gitaly.CreateRepositoryFromURLRequest.http_authorization_header": "not a reference",
 	"gitaly.CreateReviewRequest.head_commit_id":                       "a commit",
 	"gitaly.CreateReviewRequest.target_branch":                        "stored in the review, no reference is written under it",
+	"gitaly.DeleteConflictingReferenceRequest.expected_target":        "compared with the database value; nothing is written under it",
+	"gitaly.DeleteConflictingReferenceRequest.reference":              "deletion",
 	"gitaly.DeleteRefsRequest.except_with_prefix":                     "deletion",
 	"gitaly.DeleteRefsRequest.refs":                                   "deletion",
 	"gitaly.FetchSourceBranchRequest.expected_target_old_oid":         "an object ID",
