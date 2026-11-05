@@ -184,16 +184,12 @@ func prune(ctx context.Context, repo *localrepo.Repo, dir string, ttl time.Durat
 	return len(remove), nil
 }
 
-// Drop deletes the proposal reference name, the proposal of a change that landed. It expects the
+// drop deletes the proposal reference name, the proposal of a change that landed. It expects the
 // target it reads just before deleting, so that a proposal that a land of the same commit wrote
-// since stays, and that fails Drop. A reference already deleted, before the read or by a sweep
-// between the read and the deletion, is what Drop wants, and not an error. A symbolic reference was
-// not written by Update and is left, as Prune leaves it.
-func Drop(ctx context.Context, repo *localrepo.Repo, name git.ReferenceName) error {
-	return drop(ctx, repo, name, nil)
-}
-
-// drop is Drop, calling beforeDelete, when set, between the read and the deletion.
+// since stays, and that fails the drop. A reference already deleted, before the read or by a sweep
+// between the read and the deletion, is what it wants, and not an error. A symbolic reference was
+// not written by Update and is left, as Prune leaves it. It calls beforeDelete, when set, between
+// the read and the deletion.
 func drop(ctx context.Context, repo *localrepo.Repo, name git.ReferenceName, beforeDelete func()) error {
 	if !RefNameValid(name) {
 		return fmt.Errorf("refusing to drop %q: not a proposal reference", name)

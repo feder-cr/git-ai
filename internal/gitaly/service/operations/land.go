@@ -98,7 +98,7 @@ func (s *Server) landOnce(ctx context.Context, in *gitalypb.UserLandRequest, com
 		if err != nil {
 			return nil, err
 		}
-		s.landPruneAfterLand(ctx, in)
+		s.landAfterLand(ctx, in, pre)
 		return resp, nil
 	}
 
@@ -106,7 +106,7 @@ func (s *Server) landOnce(ctx context.Context, in *gitalypb.UserLandRequest, com
 	if err != nil {
 		return nil, err
 	}
-	s.landPruneAfterLand(ctx, in)
+	s.landAfterLand(ctx, in, pre)
 
 	// A request that lands alone is a batch of one.
 	resp.BatchSize = 1

@@ -28,7 +28,6 @@ import (
 	"github.com/feder-cr/git-ai/internal/graft/identity"
 	"github.com/feder-cr/git-ai/internal/graft/landlane"
 	"github.com/feder-cr/git-ai/internal/graft/policystore"
-	"github.com/feder-cr/git-ai/internal/graft/proposals"
 	"github.com/feder-cr/git-ai/internal/graft/resolver"
 	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/internal/testhelper/testcfg"
@@ -285,7 +284,7 @@ func (fx resolveFixture) server(t *testing.T, rcfg config.GraftResolver) *Server
 		locator:          locator,
 		localRepoFactory: localrepo.NewFactory(testhelper.NewLogger(t), locator, gittest.NewCommandFactory(t, fx.cfg), cache),
 		graftPolicy:      policystore.New(nil),
-		proposalSweeper:  proposals.NewSweeper(),
+		proposalSweeper:  unboundedSweeper(),
 	}
 }
 

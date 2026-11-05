@@ -35,6 +35,13 @@ var landProposalPruneErrors = promauto.NewCounter(prometheus.CounterOpts{
 	Help: "Prunings of the proposal references of a branch that failed after a land.",
 })
 
+// landProposalSweepTimeouts counts the sweeps of a branch's proposals that a land gave up on after
+// proposals.SweepTimeout. A later sweep or the housekeeping pass removes what they left.
+var landProposalSweepTimeouts = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "graft_land_proposal_sweep_timeouts_total",
+	Help: "Sweeps of the proposal references of a branch that a land gave up on because they ran out of time.",
+})
+
 // landProposalWriteErrors counts the answers that could not be kept as proposals: the land still
 // fails with its package, whose files say "proposal not stored".
 var landProposalWriteErrors = promauto.NewCounter(prometheus.CounterOpts{
@@ -208,6 +215,16 @@ func (s *Server) landWriteProposals(ctx context.Context, in *gitalypb.UserLandRe
 	return ref, nil
 }
 
+// landAfterLand is what a land does once it landed, before it answers. Its tickets go first: the
+// land they protected is done, and the lands that wait for their turn on these files need not wait
+// for the proposals to be pruned too.
+func (s *Server) landAfterLand(ctx context.Context, in *gitalypb.UserLandRequest, pre *landPreResolution) {
+	if pre != nil {
+		pre.ticket.release()
+	}
+	s.landPruneAfterLand(ctx, in)
+}
+
 // landPruneAfterLand prunes the proposals of the branch after a land that asked for resolution or
 // brought one, and drops the proposal of the change that landed. Only those lands prune, so that a
 // plain land pays nothing for proposals; the bound of landMaxProposalsPerBranch holds anyway, since
@@ -222,7 +239,7 @@ func (s *Server) landPruneAfterLand(ctx context.Context, in *gitalypb.UserLandRe
 	// The proposal of the change that landed is this land's own, a deletion no other land shares;
 	// what the branch has too many of is swept, by one land at a time.
 	if commitID, err := repo.ResolveRevision(ctx, git.Revision(in.GetCommitId()+"^{commit}")); err == nil {
-		if err := proposals.Drop(ctx, repo, proposals.Ref(branch, commitID)); err != nil {
+		if err := s.proposalSweeper.Drop(ctx, repo, proposals.Ref(branch, commitID)); err != nil {
 			landProposalPruneErrors.Inc()
 			s.logger.WithError(err).WithField("branch", branch).ErrorContext(ctx, "graft: dropping the proposal of the change that landed failed")
 		}
@@ -230,14 +247,21 @@ func (s *Server) landPruneAfterLand(ctx context.Context, in *gitalypb.UserLandRe
 	s.landPruneProposals(ctx, repo, branch)
 }
 
-// landPruneProposals sweeps the proposals of a branch (proposals.Sweeper). A failure is logged and
-// counted, and fails nothing: the proposals are an aid, and the next sweep decides anew.
+// landPruneProposals sweeps the proposals of a branch (proposals.Sweeper), for at most
+// proposals.SweepTimeout where it can wait for another land. A failure is logged and counted, and
+// fails nothing: the proposals are an aid, and the next sweep decides anew. Running out of time is
+// counted apart, as load and not as a failure.
 func (s *Server) landPruneProposals(ctx context.Context, repo *localrepo.Repo, branch string) {
 	ttl, err := s.resolveCfg.ProposalTTLOrDefault()
 	if err == nil {
 		err = s.proposalSweeper.Sweep(ctx, repo, branch, ttl, time.Now())
 	}
-	if err != nil {
+	switch {
+	case err == nil:
+	case errors.Is(err, proposals.ErrSweepTimedOut):
+		landProposalSweepTimeouts.Inc()
+		s.logger.WithError(err).WithField("branch", branch).WarnContext(ctx, "graft: the sweep of the proposals of the branch ran out of time")
+	default:
 		landProposalPruneErrors.Inc()
 		s.logger.WithError(err).WithField("branch", branch).ErrorContext(ctx, "graft: pruning the proposals of the branch failed")
 	}

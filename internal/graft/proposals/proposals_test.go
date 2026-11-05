@@ -87,7 +87,7 @@ func TestPrune(t *testing.T) {
 	require.NoError(t, Update(ctx, repo, ops))
 
 	// The branch's prune touches its own directory only.
-	require.NoError(t, Drop(ctx, repo, name("main", 0)))
+	require.NoError(t, NewSweeper().Drop(ctx, repo, name("main", 0)))
 	n, err := Prune(ctx, repo, BranchDir("main"), 7*24*time.Hour, now)
 	require.NoError(t, err)
 	// 22 recent: the dropped one went, and of the 21 left the oldest is beyond 20; plus the old one.
