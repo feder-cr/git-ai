@@ -110,7 +110,9 @@ func (s *Store) checkPackDeadline(ctx context.Context, tx *sql.Tx, deadline time
 // by CommitChangeset and the initial changeset of RegisterRepository.
 //
 // It returns *corestore.ErrRefConflict, writing nothing, when an expectation
-// fails and in.Force is not set.
+// fails and in.Force is not set, and *corestore.ErrRefNameConflict, in which case
+// the caller's rollback undoes the writes, when a reference it creates cannot
+// exist in git next to another one (refuseRefNameConflicts).
 func (s *Store) commitChangeset(ctx context.Context, tx *sql.Tx, repo *repoState, in corestore.ChangesetInput) (corestore.CommitResult, error) {
 	if err := validateChangeset(in); err != nil {
 		return corestore.CommitResult{}, err
@@ -124,6 +126,12 @@ func (s *Store) commitChangeset(ctx context.Context, tx *sql.Tx, repo *repoState
 	current, err := s.currentTargets(ctx, tx, repo.id, names)
 	if err != nil {
 		return corestore.CommitResult{}, err
+	}
+
+	if in.OnlyConflictingNames {
+		if err := s.refuseRepairOfApplicableRefs(ctx, tx, repo.id, names, current); err != nil {
+			return corestore.CommitResult{}, err
+		}
 	}
 
 	var (
@@ -200,6 +208,10 @@ func (s *Store) commitChangeset(ctx context.Context, tx *sql.Tx, repo *repoState
 		}
 	}
 
+	if err := s.refuseRefNameConflicts(ctx, tx, repo.id, effective); err != nil {
+		return corestore.CommitResult{}, err
+	}
+
 	var entries []changelog.Entry
 	if in.Changelog != nil {
 		entries = buildChangelogEntries(repo, in.Changelog, now, effective)
@@ -225,6 +237,157 @@ func (s *Store) commitChangeset(ctx context.Context, tx *sql.Tx, repo *repoState
 		Updates:   effective,
 		Changelog: entries,
 	}, nil
+}
+
+// refuseRefNameConflicts returns *corestore.ErrRefNameConflict when a reference
+// that updates created cannot exist in git next to another reference of the
+// repository: one of its parent directories is a reference, or a reference
+// exists below it. git itself checks this only against its local references,
+// which may be behind the database, so without this check two nodes could each
+// commit one side of a pair that no node can then apply.
+//
+// It runs in tx after the updates were written, so it reads the state the
+// changeset leaves: a reference the changeset deletes no longer counts (refs/a
+// deleted and refs/a/b created in one changeset is legal), and a reference it
+// creates does. The caller rolls back on an error.
+//
+// It sees every commit of the repository before its own. CommitChangeset holds
+// the row lock of the repository from before the first read (Postgres; READ
+// COMMITTED, so each statement here reads what the commits before the lock
+// committed) or the database write lock (SQLite, BEGIN IMMEDIATE), and the
+// changesets are the only writers of graft_refs. Two commits of a pair therefore
+// run one after the other, and the second one finds the first one's row.
+//
+// A reference that already exists is not checked, whatever its value changes
+// to: an update or a deletion creates no new name, and updates of existing
+// references, the common case (a land), cost no query here. Each created
+// reference costs one primary key range probe that reads at most one row; the
+// parent names of the created references, deduplicated, are read together, in
+// one primary key lookup per maxNamesPerQuery names. Neither reads the other
+// references of the repository.
+func (s *Store) refuseRefNameConflicts(ctx context.Context, tx *sql.Tx, repoID int64, updates []corestore.AppliedUpdate) error {
+	var created, parents []string
+	seen := map[string]struct{}{}
+	for _, u := range updates {
+		if !u.Old.Absent() || u.New.Absent() {
+			continue
+		}
+		created = append(created, u.Name)
+		for _, parent := range corestore.ParentRefNames(u.Name) {
+			if _, dup := seen[parent]; !dup {
+				seen[parent] = struct{}{}
+				parents = append(parents, parent)
+			}
+		}
+	}
+
+	existing, err := s.currentTargets(ctx, tx, repoID, parents)
+	if err != nil {
+		return err
+	}
+
+	for _, name := range created {
+		for _, parent := range corestore.ParentRefNames(name) {
+			if _, ok := existing[parent]; ok {
+				return &corestore.ErrRefNameConflict{Name: name, Existing: parent}
+			}
+		}
+
+		child, found, err := s.firstRefBelow(ctx, tx, repoID, name)
+		if err != nil {
+			return err
+		}
+		if found {
+			return &corestore.ErrRefNameConflict{Name: name, Existing: child}
+		}
+	}
+
+	return nil
+}
+
+// firstRefBelow returns the first reference of the repository below the
+// directory name, and whether there is one.
+func (s *Store) firstRefBelow(ctx context.Context, q querier, repoID int64, name string) (string, bool, error) {
+	var child []byte
+	lower, upper := refChildrenRange(name)
+	err := q.QueryRowContext(ctx, s.bind(firstRefInRangeQuery), repoID, lower, upper).Scan(&child)
+	switch {
+	case err == nil:
+		return string(child), true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("read the references below %q: %w", name, err)
+	}
+}
+
+// conflictingRef returns a reference of the repository, as q reads it, that git
+// cannot hold next to the reference name: a parent directory of name that is a
+// reference, else the first reference below name. The reference name itself
+// does not count. It costs one primary key lookup of the parent names and one
+// primary key range probe.
+func (s *Store) conflictingRef(ctx context.Context, q querier, repoID int64, name string) (string, bool, error) {
+	parents := corestore.ParentRefNames(name)
+	existing, err := s.currentTargets(ctx, q, repoID, parents)
+	if err != nil {
+		return "", false, err
+	}
+	for _, parent := range parents {
+		if _, ok := existing[parent]; ok {
+			return parent, true, nil
+		}
+	}
+	return s.firstRefBelow(ctx, q, repoID, name)
+}
+
+// ConflictingRef implements corestore.MetaStore.
+func (s *Store) ConflictingRef(ctx context.Context, repoID int64, name string) (string, bool, error) {
+	var (
+		existing string
+		found    bool
+	)
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		existing, found, err = s.conflictingRef(ctx, tx, repoID, name)
+		return err
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return existing, found, nil
+}
+
+// refuseRepairOfApplicableRefs returns corestore.ErrRefNotConflicting unless
+// every reference of names exists in current and conflicts by name with another
+// reference of the repository (ChangesetInput.OnlyConflictingNames). It reads
+// in tx, under the lock of the repository, so the check holds for the commit it
+// guards: once one side of a pair is deleted, the other is no longer accepted.
+func (s *Store) refuseRepairOfApplicableRefs(ctx context.Context, tx *sql.Tx, repoID int64, names []string, current map[string]corestore.Target) error {
+	for _, name := range names {
+		if current[name].Absent() {
+			return fmt.Errorf("reference %q does not exist: %w", name, corestore.ErrRefNotConflicting)
+		}
+		_, found, err := s.conflictingRef(ctx, tx, repoID, name)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("reference %q: %w", name, corestore.ErrRefNotConflicting)
+		}
+	}
+	return nil
+}
+
+// firstRefInRangeQuery returns the first reference of a repository in a range of
+// names. The range is on the primary key (repo_id, name), whose names compare as
+// bytes in both dialects (BLOB and BYTEA), whatever the collation.
+const firstRefInRangeQuery = "SELECT name FROM graft_refs WHERE repo_id = ? AND name >= ? AND name < ? ORDER BY name LIMIT 1"
+
+// refChildrenRange returns the half-open range of the names below the reference
+// name: from name + "/" up to name + "0", '0' being the byte after '/'. refs/a-b
+// and refs/a0 are outside the range of refs/a.
+func refChildrenRange(name string) (lower, upper []byte) {
+	return []byte(name + "/"), []byte(name + "0")
 }
 
 // buildChangelogEntries returns the changelog entries of the effective updates

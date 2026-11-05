@@ -605,7 +605,7 @@ func TestConformanceClientTable(t *testing.T) {
 						observed, problems, log := runClientRow(t, gitai.newRemote(t), row, protocol)
 						key := rowKey{row.name, protocol}
 						got := differences(reference[key], observed)
-						want := allowedFor(row.name, protocol)
+						want := allowedFor(row.name, mode, protocol)
 						if !equalStrings(want, got) {
 							t.Errorf("unlisted difference from stock git\nmode %s, row %q, protocol %d\ndifferences:\n  %s\nallowed:\n  %s\n--- gitai\n%s\n--- stock\n%s",
 								mode.name, row.name, protocol, strings.Join(got, "\n  "), strings.Join(want, "\n  "), log, referenceLogs[key])

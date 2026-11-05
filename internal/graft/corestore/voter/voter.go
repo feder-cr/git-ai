@@ -280,7 +280,9 @@ func (v *Voter) preparePack(ctx context.Context, payload gitcmd.HooksPayload, ch
 //
 // Authoritative mode: a returned error aborts the git transaction; a
 // reference conflict is returned as a wrapped
-// updateref.MismatchingStateError, any storage failure as Unavailable.
+// updateref.MismatchingStateError, a file/directory conflict with a reference of
+// the database as a wrapped updateref.FileDirectoryConflictError, any storage
+// failure as Unavailable.
 // Shadow mode: it always returns nil.
 func (v *Voter) Prepared(ctx context.Context, payload gitcmd.HooksPayload, changes []byte, meta changelog.Meta) error {
 	if v == nil || !v.core.Enabled() {
@@ -350,6 +352,53 @@ func (v *Voter) shadowPrepare(ctx context.Context, payload gitcmd.HooksPayload, 
 func (v *Voter) shadowFailed(ctx context.Context, err error) {
 	v.metrics.shadowErrors.Inc()
 	v.logger.WithError(err).ErrorContext(ctx, "storage core: shadow write failed, the git write proceeds")
+}
+
+// CreatedRefConflict returns a reference of the database that git cannot hold
+// next to ref, which a push creates, and "" when there is none. It applies the
+// database's own refusal (MetaStore.CommitChangeset, *corestore.ErrRefNameConflict)
+// to one reference before git's transaction, from the update hook, so that
+// receive-pack refuses that reference alone and the other references of a
+// non-atomic push still land. It is not atomic with the commit, which checks
+// again. The caller decides whether the client may see the name it returns.
+//
+// A repository the database does not track, or whose import is not complete,
+// has nothing to conflict with. A failed read is returned as Unavailable in
+// authoritative mode; in shadow mode it is logged and counted as a shadow error,
+// and the push proceeds.
+func (v *Voter) CreatedRefConflict(ctx context.Context, repo *gitalypb.Repository, ref string) (string, error) {
+	if v == nil || !v.core.Enabled() || repo == nil {
+		return "", nil
+	}
+
+	existing, err := v.createdRefConflict(ctx, repo, ref)
+	if err != nil {
+		if !v.core.Authoritative() {
+			v.shadowFailed(ctx, fmt.Errorf("check the name of a created reference: %w", err))
+			return "", nil
+		}
+		return "", v.unavailable(err)
+	}
+	return existing, nil
+}
+
+func (v *Voter) createdRefConflict(ctx context.Context, repo *gitalypb.Repository, ref string) (string, error) {
+	record, err := v.core.Meta.GetRepository(ctx, corestore.KeyOf(repo))
+	if errors.Is(err, corestore.ErrRepositoryNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if record.HeadSeq == 0 {
+		return "", nil
+	}
+
+	existing, found, err := v.core.Meta.ConflictingRef(ctx, record.ID, ref)
+	if err != nil || !found {
+		return "", err
+	}
+	return existing, nil
 }
 
 // prepare is the binding write path of doc/graft/PLAN6.md. In shadow mode the
@@ -508,6 +557,17 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	if errors.As(err, &conflict) {
 		result = resultConflict
 		return fmt.Errorf("storage core: %w", mismatchError(conflict, hash))
+	}
+	// git checked the name against the local references only, which can be behind
+	// the database: this is the file/directory conflict git would have reported
+	// had it seen the other node's reference.
+	var nameConflict *corestore.ErrRefNameConflict
+	if errors.As(err, &nameConflict) {
+		result = resultConflict
+		return fmt.Errorf("storage core: %w", updateref.FileDirectoryConflictError{
+			ConflictingReferenceName: nameConflict.Name,
+			ExistingReferenceName:    nameConflict.Existing,
+		})
 	}
 	if errors.Is(err, corestore.ErrRepositoryNotFound) {
 		if shadow {

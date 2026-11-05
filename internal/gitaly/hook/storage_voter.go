@@ -2,8 +2,13 @@ package hook
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
+	"github.com/feder-cr/git-ai/internal/git/updateref"
+	"github.com/feder-cr/git-ai/internal/graft/agentrefs"
 	"github.com/feder-cr/git-ai/internal/graft/changelog"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
@@ -36,6 +41,10 @@ type StorageVoter interface {
 	// references durable later (doc/graft/PLAN7.md, LOCAL REFERENCE WRITES RULE).
 	// When ok, the caller calls end once that process has exited.
 	DeferReferenceWrites(ctx context.Context, repo *gitalypb.Repository) (end func(), ok bool)
+	// CreatedRefConflict returns a reference of the database that git cannot hold next
+	// to ref, which the caller creates, or "" when there is none. It reads outside any
+	// commit; Prepared refuses such a reference again in the commit.
+	CreatedRefConflict(ctx context.Context, repo *gitalypb.Repository, ref string) (string, error)
 }
 
 // DeferReferenceWrites decides whether the git process that the manager's
@@ -94,7 +103,70 @@ func (m *GitLabHookManager) storagePrepared(ctx context.Context, payload gitcmd.
 		meta.Actor = payload.UserDetails.UserID
 	}
 
-	return m.storageVoter.Prepared(ctx, payload, changes, meta)
+	err := m.storageVoter.Prepared(ctx, payload, changes, meta)
+
+	// The other reference of a file/directory conflict may be one the writer cannot see.
+	var nameConflict updateref.FileDirectoryConflictError
+	if errors.As(err, &nameConflict) {
+		nameConflict.ExistingReferenceName = visibleRefName(nameConflict.ExistingReferenceName, agentWriter(env))
+		return fmt.Errorf("storage core: %w", nameConflict)
+	}
+	return err
+}
+
+// checkCreatedRefName refuses, with a wrapped updateref.FileDirectoryConflictError, the
+// creation of ref when the storage core's database holds a reference that git cannot hold
+// next to it, and tells the client why on stderr. The update hook runs it for each reference
+// of a push before git's transaction, so receive-pack refuses that reference alone and the
+// other references of a non-atomic push still land; git's own check of the name only sees
+// this node's copy, which can be behind the database. The commit of the transaction refuses
+// such a reference again (the backstop), atomically. Updates and deletions of existing
+// references create no name and read nothing.
+func (m *GitLabHookManager) checkCreatedRefName(ctx context.Context, payload gitcmd.HooksPayload, env []string, ref string, created bool, stderr io.Writer) error {
+	if m.storageVoter == nil || !created {
+		return nil
+	}
+
+	existing, err := m.storageVoter.CreatedRefConflict(ctx, payload.Repo, ref)
+	if err != nil {
+		return err
+	}
+	if existing == "" {
+		return nil
+	}
+
+	conflict := updateref.FileDirectoryConflictError{
+		ConflictingReferenceName: ref,
+		ExistingReferenceName:    visibleRefName(existing, agentWriter(env)),
+	}
+	fmt.Fprintln(stderr, RefNameConflictMessage(conflict))
+	return fmt.Errorf("storage core: %w", conflict)
+}
+
+// hiddenRefName stands for a reference that the writer cannot see in a message to it.
+const hiddenRefName = "a reference hidden from you"
+
+// visibleRefName returns name, or hiddenRefName when the writer is an agent that cannot see it
+// (agentrefs.VisibleToAgents).
+func visibleRefName(name string, agent bool) string {
+	if agent && !agentrefs.VisibleToAgents(name) {
+		return hiddenRefName
+	}
+	return name
+}
+
+// agentWriter reports whether the hooks environment env names an agent as the writer.
+func agentWriter(env []string) bool {
+	meta, err := gitcmd.ChangelogMetaFromEnv(env)
+	return err == nil && meta.Agent
+}
+
+// RefNameConflictMessage is the line that tells a client why the storage core refused a
+// reference: git cannot hold it next to another one, which the database holds or the same
+// write creates.
+func RefNameConflictMessage(conflict updateref.FileDirectoryConflictError) string {
+	return fmt.Sprintf("refusing %s: git cannot hold it next to %s; push the other references without it",
+		conflict.ConflictingReferenceName, conflict.ExistingReferenceName)
 }
 
 // changelogMetaOf is the changelog metadata of a transaction, shared by the

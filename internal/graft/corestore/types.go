@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -238,6 +239,72 @@ func (e *ErrRefConflict) Error() string {
 	c := e.Conflicts[0]
 	return fmt.Sprintf("storage core: reference %q is at %q but expected %q (%d conflicting references)",
 		c.Name, c.Actual, c.Expected, len(e.Conflicts))
+}
+
+// ErrRefNameConflict is returned by MetaStore.CommitChangeset when a reference
+// that the changeset creates cannot exist in git next to another reference of
+// the repository, because one name is a directory of the other (refs/heads/a
+// and refs/heads/a/b). Nothing was written. It is the database's form of git's
+// own file/directory conflict: every local repository is rebuilt from the
+// database, so a pair git cannot hold would stop the catch-up and the hydration
+// of the repository on every node.
+type ErrRefNameConflict struct {
+	// Name is the reference that the changeset creates.
+	Name string
+	// Existing is the reference it conflicts with, which the changeset leaves in
+	// place or creates too.
+	Existing string
+}
+
+func (e *ErrRefNameConflict) Error() string {
+	return fmt.Sprintf("storage core: reference %q conflicts with reference %q: one name is a directory of the other", e.Name, e.Existing)
+}
+
+// ErrRefNotConflicting is returned by MetaStore.CommitChangeset for a changeset
+// with ChangesetInput.OnlyConflictingNames when a reference it updates is absent
+// or is not part of a pair that git cannot hold together.
+var ErrRefNotConflicting = errors.New("storage core: the reference is not part of a pair of conflicting references")
+
+// RefNameConflict is a pair of references that git cannot hold together.
+type RefNameConflict struct {
+	// Parent is the name that is a directory of Child.
+	Parent string
+	// Child is the name below Parent.
+	Child string
+}
+
+// ParentRefNames returns every name that is a directory of the reference name,
+// shortest first: refs and refs/heads for refs/heads/a.
+func ParentRefNames(name string) []string {
+	var parents []string
+	for i := 0; i < len(name); i++ {
+		if name[i] == '/' {
+			parents = append(parents, name[:i])
+		}
+	}
+	return parents
+}
+
+// RefNameConflicts returns the pairs of the references of refs that git cannot
+// hold together, sorted by child, then by parent. Its cost is linear in the
+// number of references, so it is for repairs and verification: a commit checks
+// only the names it creates (MetaStore.CommitChangeset).
+func RefNameConflicts(refs map[string]Target) []RefNameConflict {
+	var conflicts []RefNameConflict
+	for name := range refs {
+		for _, parent := range ParentRefNames(name) {
+			if _, ok := refs[parent]; ok {
+				conflicts = append(conflicts, RefNameConflict{Parent: parent, Child: name})
+			}
+		}
+	}
+	sort.Slice(conflicts, func(i, j int) bool {
+		if conflicts[i].Child != conflicts[j].Child {
+			return conflicts[i].Child < conflicts[j].Child
+		}
+		return conflicts[i].Parent < conflicts[j].Parent
+	})
+	return conflicts
 }
 
 var (
