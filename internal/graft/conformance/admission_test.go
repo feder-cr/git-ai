@@ -28,12 +28,7 @@ func TestConformanceFailedPushReleasesTheAdmission(t *testing.T) {
 		// admission to be held, so that it fails when the bug is fixed and the entry can go.
 		bug string
 	}{
-		{
-			desc: "an atomic push with a directory/file conflict",
-			args: []string{"--atomic", "main:refs/heads/side/below"},
-			bug: "git runs the preparing hook, which takes the admission, and then fails in the backend's prepare; " +
-				"it runs no aborted hook for a transaction that the backend closed, so nothing releases the admission until the hold bound",
-		},
+		{desc: "an atomic push with a directory/file conflict", args: []string{"--atomic", "main:refs/heads/side/below"}},
 		{desc: "a push with a directory/file conflict", args: []string{"main:refs/heads/side/below"}},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
