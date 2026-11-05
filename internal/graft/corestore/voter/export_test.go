@@ -50,6 +50,10 @@ func (p PendingSet) Len() int { return p.set.len() }
 // Prepared or Aborted phase has not run yet.
 func (v *Voter) PreparedPacks() int { return v.packs.len() }
 
+// PendingEntries returns the number of transactions committed in Prepared whose
+// Committed or Aborted phase has not run yet.
+func (v *Voter) PendingEntries() int { return v.pending.len() }
+
 func testRepo(storageName, relativePath string) *gitalypb.Repository {
 	return &gitalypb.Repository{StorageName: storageName, RelativePath: relativePath}
 }

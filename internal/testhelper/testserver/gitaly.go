@@ -324,6 +324,7 @@ type gitalyServerDeps struct {
 	graftStorageGate       *gate.Gate
 	graftPolicy            *policystore.Store
 	hookMgrWrapper         func(hook.Manager) hook.Manager
+	storageVoterObserver   func(*voter.Voter)
 }
 
 func (gsd *gitalyServerDeps) createDependencies(tb testing.TB, ctx context.Context, cfg config.Cfg) *service.Dependencies {
@@ -401,8 +402,11 @@ func (gsd *gitalyServerDeps) createDependencies(tb testing.TB, ctx context.Conte
 		}
 		repoFactory := localrepo.NewFactory(gsd.logger, gsd.locator, gsd.gitCmdFactory, gsd.catfileCache)
 		gsd.graftStorageSyncer = corestoresyncer.New(gsd.graftStorage, gsd.logger, gsd.locator, repoFactory, gsd.gitCmdFactory)
-		hookManagerOpts = append(hookManagerOpts, hook.WithStorageVoter(
-			voter.New(gsd.graftStorage, gsd.logger, repoFactory, gsd.locator, gsd.graftStorageSyncer)))
+		storageVoter := voter.New(gsd.graftStorage, gsd.logger, repoFactory, gsd.locator, gsd.graftStorageSyncer)
+		if gsd.storageVoterObserver != nil {
+			gsd.storageVoterObserver(storageVoter)
+		}
+		hookManagerOpts = append(hookManagerOpts, hook.WithStorageVoter(storageVoter))
 		if gsd.graftStorage.Authoritative() {
 			gsd.graftStorageGate = gate.New(gsd.graftStorage, gsd.graftStorageSyncer, gsd.logger, gsd.locator, repoFactory, protoregistry.GitalyProtoPreregistered)
 		}
@@ -587,6 +591,15 @@ func WithGraftPolicy(store *policystore.Store) GitalyServerOpt {
 func WithHookManagerWrapper(wrap func(hook.Manager) hook.Manager) GitalyServerOpt {
 	return func(deps gitalyServerDeps) gitalyServerDeps {
 		deps.hookMgrWrapper = wrap
+		return deps
+	}
+}
+
+// WithStorageVoterObserver gives fn the storage voter of the server (WithGraftStorage), so that a
+// test can read what the voter keeps between the phases of a transaction.
+func WithStorageVoterObserver(fn func(*voter.Voter)) GitalyServerOpt {
+	return func(deps gitalyServerDeps) gitalyServerDeps {
+		deps.storageVoterObserver = fn
 		return deps
 	}
 }
