@@ -572,19 +572,20 @@ var errReftableCompactionContended = errors.New("reftable compaction contended")
 
 // Exit codes and stderr of git-pack-refs(1) on a reftable repository when the stack is contended.
 // They are git internals, read from the bundled builds, git 2.56.0-rc1 (3bbf434, "master") and
-// 2.55.0-rc1 (1ea786d, "prev"). TestPackRefsIfNeeded_reftableContention pins 251 and 255 "data is
-// locked" against both; 244 and 255 "data concurrently modified" need a writer racing pack-refs,
-// which TestWriteCommitGraphIfIdle_ConcurrentWithOptimizeRepository runs with both, without
-// guaranteeing the race in a given run:
+// 2.56.0 (a018953, "prev", the default), whose reftable/ and refs/reftable-backend.c are the same.
+// TestPackRefsIfNeeded_reftableContention pins 251 and 255 "data is locked" against both; 255 "data
+// concurrently modified" needs a writer racing pack-refs, which
+// TestWriteCommitGraphIfIdle_ConcurrentWithOptimizeRepository runs with both, without guaranteeing
+// the race in a given run:
 //
-//   - reftable_be_optimize (refs/reftable-backend.c:1699 in master, :1656 in prev) returns what
-//     reftable_stack_clean (reftable/stack.c:1845 in master, :1807 in prev) returns as is, and git
-//     exits with it modulo 256 and an empty stderr. reftable_stack_clean takes tables.list.lock
-//     without waiting (no write options, so reftable.lockTimeout does not apply) and fails with
-//     REFTABLE_LOCK_ERROR (-5, exit 251) when a writer holds it. Only prev also fails with
-//     REFTABLE_OUTDATED_ERROR (-12, exit 244) when a writer changed the stack since pack-refs read
-//     it (reftable_stack_init_addition); master reloads the stack there instead. Both codes are in
-//     reftable/reftable-error.h.
+//   - reftable_be_optimize (refs/reftable-backend.c:1699) returns what reftable_stack_clean
+//     (reftable/stack.c:1845) returns as is, and git exits with it modulo 256 and an empty stderr.
+//     reftable_stack_clean takes tables.list.lock without waiting (no write options, so
+//     reftable.lockTimeout does not apply) and fails with REFTABLE_LOCK_ERROR (-5, exit 251) when a
+//     writer holds it. When a writer changed the stack since pack-refs read it,
+//     reftable_stack_init_addition reloads the stack. git 2.55.0-rc1 (1ea786d), the default before
+//     2.56.0, failed there with REFTABLE_OUTDATED_ERROR (-12, exit 244) instead, which is still
+//     classified as contention. Both codes are in reftable/reftable-error.h.
 //   - When the compaction itself fails, reftable_be_optimize reports it with error(), exiting 255,
 //     and "unable to compact stack: <reftable_error_str>", whose texts for these two errors come
 //     from reftable/error.c.
