@@ -1,6 +1,10 @@
 # DB-first writes (design for approval)
 
-Status: design only, no code. Branch `p10-dbfirst-design`, from `main` at `0fccd7c`.
+Status: approved by Federico on 2026-11-05 for the RPC path only (pushes keep today's order and
+get only the shorter hold). Decisions: a DB-first write answers after the local apply; stage 1b's
+whole-push refusal is accepted, with no upstream git proposal for now; per-branch admission is
+dropped; stage 3 has the gate below plus Federico's decision. Stage 1b is implemented (branch
+`p10-stale-old`, see its section); the other stages are not started.
 Spec: [dbfirst.tla](dbfirst.tla) with [dbfirst.cfg](dbfirst.cfg) and the configurations
 `dbfirst_*.cfg` beside it.
 
@@ -272,8 +276,12 @@ transaction to the reference-transaction hook, also the ones it rejected
 stop-gap refuses the whole push when a create (zero old value) finds the reference existing. TLC
 finds the wider case, and it is reachable on `main` today with two nodes
 (`dbfirst_bug_multinode.cfg`): a push whose old value for a reference is the database's current
-value (from `--force-with-lease`, for example) while this node's copy is behind is rejected by
-git, yet the voter's compare-and-swap succeeds and commits it. The client is told the update was
+value while this node's copy is behind is rejected by git, yet the voter's compare-and-swap
+succeeds and commits it. With stock git the old value of a command is always the value the
+server advertised (`--force-with-lease` aborts on the client when they differ), so the way there
+is an ABA on another node between the advertisement and the commands: the branch moves from v0
+to v1, this node catches up to v1, the branch moves back to v0. The client's v0 is then the
+database's value and not the copy's (`internal/graft/e2e/storage_stale_old_test.go`). The client is told the update was
 rejected, the database has it, and the `Committed` phase notes its sequence, so the watermark
 moves over a change the copy does not have: this node's copy diverges until the reference is
 written again (TLC: `NoPhantom` and the liveness property `EventuallyConsistent` both fail).
@@ -380,10 +388,17 @@ Use the Prepared-phase metric of p8 to split the hold into its steps (git prepar
 - In `expectations`, for receive-pack (old value always sent), an update whose explicit old
   value differs from the local value read under git's lock is refused with the whole push, like
   the `02fbb52` stop-gap for creates; the message names the reference.
-- Gate: an e2e test with two nodes reproduces the TLC trace of `dbfirst_bug_multinode.cfg` (push
-  with `--force-with-lease` to the database's value while the serving node is behind): it fails
-  on `main` (the database records the rejected update) and passes with the change; no benchmark
-  change (pushes only, a comparison already read).
+- Gate: an e2e test with two nodes reproduces the TLC trace of `dbfirst_bug_multinode.cfg`
+  (an ABA of the branch on another node between the push's advertisement and its commands, so
+  the client's old value is the database's value while the serving node's copy is behind): it
+  fails on `main` (the database records the rejected update) and passes with the change; no
+  benchmark change (pushes only, a comparison already read).
+- **Done** (branch `p10-stale-old`). `TestStorageRejectedStaleUpdateIsNotRecorded` failed on
+  `main` on SQLite and Postgres: the client got `! [remote rejected] HEAD -> topic (incorrect old
+  value provided)` and the database held the rejected v2. The fix is one check in the voter,
+  `rejectedByGit`, which now covers the stale create too: an old value of a receive-pack that is
+  not the local value under the lock refuses the whole push (`MismatchingStateError`, counted as a
+  `conflict`); shadow mode logs and counts it and does not refuse.
 
 ### Stage 2: DB-first server-driven writes, flag off by default (5-8 days)
 

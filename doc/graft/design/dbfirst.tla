@@ -152,8 +152,11 @@ ReadRpc(w) ==
             /\ SetPC(w, "read")
     /\ UNCHANGED <<log, local, wm, notes, lock, h0, crashes>>
 
-(* A push's old value: what the server advertised (local), or a value the  *)
-(* client learned elsewhere (--force-with-lease), here the database's.     *)
+(* A push's old value: what the server advertised (local), or the         *)
+(* database's. Values are unique here, so the second choice stands for an *)
+(* ABA on another node that brought the database back to the advertised   *)
+(* value while this copy holds the value in between (with stock git the   *)
+(* old value is always the advertised one; see dbfirst-writes.md).        *)
 ReadPush(w) ==
     /\ pc[w] = "arriving"
     /\ Kind[w] = "push"

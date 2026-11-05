@@ -384,6 +384,13 @@ Git hooks use private.
   inside the workspace, need a normal Git clone.
 - `graft` does not speak the Git protocol for `git push` and `git pull`. Use the
   server's normal Git protocol for that.
+- In authoritative storage mode, a push without `--atomic` that git rejects one
+  update of because of its old value (a branch another client just created, or a
+  reference whose value the serving node does not have) fails as a whole: none of
+  its references lands, where a plain git server would land the others. git still
+  hands the rejected update to the reference-transaction hook, and the storage
+  core cannot tell the other rejected updates of the push apart. Push the
+  references again. See [STORAGE](STORAGE.md#failures).
 - `graft` does not materialize repository paths that are reserved, such as
   `.git` or `.graft` directories at any depth, or that are not safe file names
   on the client's system, such as names with `:` or `\` on Windows. It lists

@@ -586,12 +586,21 @@ or re-import the repository from scratch (see
   aborted after the database commit.
 - **A node with an empty disk.** Its first request for a repository hydrates
   it.
-- **A push that creates a branch another client just created.** Without
-  `--atomic`, git lets one update of a push fail and still shows it to the
-  reference-transaction hook. The database must not record it, so the storage
-  core refuses the whole push: the client's push fails, and the other references
-  of that push do not land either, unlike a plain git server. Push them again.
-  In shadow mode the write proceeds unrecorded, and counts in
+- **A push with an update git rejected for its old value.** Without `--atomic`,
+  git lets one update of a push fail and still shows it to the
+  reference-transaction hook, without marking it. Two cases: a create of a
+  branch another client just created (the old value is zero, the reference
+  exists), and an update or deletion whose old value is not the node's local
+  value. The second case can find the database holding that old value, when
+  another node moved the reference and moved it back and this node's copy is
+  between the two (an ABA that the client did not see), so the database's
+  compare-and-swap would accept an update the client is told was rejected. The
+  database must record neither, so the storage core refuses the whole push: the
+  client's push fails, and the other references of that push do not land
+  either, unlike a plain git server. Push them again. The storage core tells
+  this by comparing every old value of a push with the local value it reads
+  while git holds the reference lock, which git checked the update against. In
+  shadow mode the write proceeds unrecorded, and counts in
   `graft_storage_shadow_errors_total`.
 - **Two nodes create conflicting names.** git cannot hold `refs/heads/a` and
   `refs/heads/a/b` together, and each node's git only sees its own copy. The
