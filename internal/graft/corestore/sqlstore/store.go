@@ -145,14 +145,17 @@ type Pool struct {
 	ConnMaxLifetime time.Duration
 }
 
-// DefaultPool is the pool of Open. 32 connections commit about 2,000 to 3,000
-// changesets per second in separate repositories on the development machine
-// (BenchmarkCommitChangesetConcurrent: 16 writers 1,922-2,199 tx/s, 64 writers
-// 3,104-3,190 tx/s), twenty times what a node commits end to end (about 90 per
-// second), and leave room for three nodes under PostgreSQL's default
-// max_connections of 100. As many stay idle, so that steady load reuses them;
-// the idle ones close after five minutes, and every connection is replaced
-// after thirty, so that the pool follows a failover or a changed DNS name.
+// DefaultPool is the pool of Open. With it, BenchmarkCommitChangesetConcurrent
+// commits 2,019-2,127 changesets per second for 16 writers in separate
+// repositories on the development machine, and 2,586-2,630 for 64 writers
+// queued on the 32 connections: more than twenty times what a node committed end
+// to end in the land benchmarks (90 to 120 per second). As many connections stay
+// idle, so that steady load reuses them; the idle ones close after five minutes,
+// and every connection is replaced after thirty, so that the pool follows a
+// failover or a changed DNS name. Every node, and during a graceful upgrade both
+// the old and the new process of a node, has a pool of its own: their sum must
+// stay below the server's max_connections, since a refused connection (53300)
+// fails the operation and is not retried.
 var DefaultPool = Pool{
 	MaxOpenConns:    32,
 	MaxIdleConns:    32,

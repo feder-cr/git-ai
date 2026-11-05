@@ -473,7 +473,9 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	// record (doc/graft/PLAN7.md, PACK OWNERSHIP RULE 4).
 	readAt := time.Now()
 	record, err := v.core.Meta.GetRepository(ctx, corestore.KeyOf(payload.Repo))
-	v.observePreparedStep(updates, stepRecord, time.Since(readAt))
+	if err == nil {
+		v.observePreparedStep(updates, stepRecord, time.Since(readAt))
+	}
 	if errors.Is(err, corestore.ErrRepositoryNotFound) {
 		if shadow {
 			v.metrics.untracked.Inc()
@@ -513,7 +515,9 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 
 	localRead := time.Now()
 	refUpdates, err := v.expectations(ctx, repo, updates, payload.IsHookRequested(gitcmd.PreReceiveHook))
-	v.observePreparedStep(updates, stepLocalRead, time.Since(localRead))
+	if err == nil {
+		v.observePreparedStep(updates, stepLocalRead, time.Since(localRead))
+	}
 	if err != nil {
 		var exists updateref.ReferenceAlreadyExistsError
 		if errors.As(err, &exists) {
@@ -532,9 +536,12 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	} else {
 		built := time.Now()
 		pack, err = v.buildAndUpload(ctx, repo, payload.Repo.GetStorageName(), record, readAt, updates, false)
-		v.observePreparedStep(updates, stepPack, time.Since(built))
 		if err != nil {
 			return v.unavailable(err)
+		}
+		// Like the Preparing steps, a transaction without new tips builds no pack.
+		if len(newTips(updates)) > 0 {
+			v.observePreparedStep(updates, stepPack, time.Since(built))
 		}
 	}
 
@@ -569,7 +576,9 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 
 	committing := time.Now()
 	res, err := v.core.Meta.CommitChangeset(commitCtx, in)
-	v.observePreparedStep(updates, stepCommit, time.Since(committing))
+	if err == nil {
+		v.observePreparedStep(updates, stepCommit, time.Since(committing))
+	}
 
 	var conflict *corestore.ErrRefConflict
 	if errors.As(err, &conflict) {
@@ -914,7 +923,7 @@ const (
 
 // observePreparedStep observes d in step of graft_storage_prepared_step_seconds,
 // for the kind of the transaction of updates. Like observeStep, only
-// authoritative mode observes the steps.
+// authoritative mode observes the steps, and only steps that succeeded.
 func (v *Voter) observePreparedStep(updates []inputUpdate, step string, d time.Duration) {
 	if !v.core.Authoritative() {
 		return
@@ -929,9 +938,11 @@ func (v *Voter) observedDeferDurability(ctx context.Context, payload gitcmd.Hook
 		return nil
 	}
 	start := time.Now()
-	err := v.deferDurability(ctx, payload, changes, shadow)
+	if err := v.deferDurability(ctx, payload, changes, shadow); err != nil {
+		return err
+	}
 	v.observePreparedStep(updates, stepDurability, time.Since(start))
-	return err
+	return nil
 }
 
 // fault calls FaultHook and exits the process when CrashEnv selects the point.
@@ -1609,9 +1620,10 @@ func newMetrics() *metrics {
 			Name: "graft_storage_prepared_step_seconds",
 			Help: "Time of each step of the Prepared phase of authoritative writes, while git holds the reference " +
 				"locks: record (the read of the repository record), local_read (the local references the expected " +
-				"values need), pack (the pack, when the Preparing phase did not prepare it), commit (the database " +
-				"commit of the changeset) and durability (the dirty marker of deferred reference durability); kind " +
-				"is create for a transaction that only creates references, update otherwise.",
+				"values need), pack (walk, pack and upload of the pack of a transaction with new tips, when the " +
+				"Preparing phase did not prepare it), commit (the database commit of the changeset) and durability " +
+				"(the dirty marker of deferred reference durability), each observed when it succeeded; kind is " +
+				"create for a transaction that only creates references, update otherwise.",
 			Buckets: []float64{.0005, .001, .002, .003, .005, .0075, .01, .015, .02, .03, .05, .075, .1, .25, .5, 1, 2.5},
 		}, []string{"kind", "step"}),
 	}
