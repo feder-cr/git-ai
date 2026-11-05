@@ -2,9 +2,12 @@ package operations
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/git/gittest"
@@ -55,6 +58,37 @@ func TestUserLandThroughASymbolicBranch(t *testing.T) {
 				requireBranchAt(t, cfg, fx.repoPath, git.DefaultBranch, landed)
 			})
 		}
+
+		t.Run("a target a land may not name is refused", func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cfg, client := setupOperationsService(t, ctx)
+			fx := newRetryFixture(t, ctx, cfg)
+
+			for alias, target := range map[string]string{
+				"to-full-name": "refs/heads/refs/odd/name",
+				"to-head":      "refs/heads/HEAD",
+			} {
+				gittest.WriteRef(t, cfg, fx.repoPath, git.ReferenceName(target), fx.tip)
+				gittest.Exec(t, cfg, "-C", fx.repoPath, "symbolic-ref", "refs/heads/"+alias, target)
+
+				_, err := client.UserLand(ctx, landRequest(fx.repoProto, alias, fx.change))
+				testhelper.RequireGrpcCode(t, err, codes.InvalidArgument)
+				require.Equal(t, fx.tip.String(), exactReferenceValue(t, cfg, fx.repoPath, git.ReferenceName(target)), alias)
+			}
+
+			// A target over the bound of the identity of a land. A reftable refuses the symbolic
+			// reference when it is made.
+			if testhelper.IsReftableEnabled() {
+				return
+			}
+			tooLong := strings.TrimSuffix(strings.Repeat(strings.Repeat("a", 200)+"/", 35), "/")
+			gittest.Exec(t, cfg, "-C", fx.repoPath, "symbolic-ref", "refs/heads/to-too-long", "refs/heads/"+tooLong)
+			_, err := client.UserLand(ctx, landRequest(fx.repoProto, "to-too-long", fx.change))
+			// The name is also longer than a path may be, and then git does not follow it.
+			require.Contains(t, []codes.Code{codes.InvalidArgument, codes.FailedPrecondition}, status.Code(err), "%v", err)
+			t.Logf("LANDTOOLONG %s", status.Convert(err).Message()[:80])
+		})
 
 		t.Run("a target that is no branch is refused", func(t *testing.T) {
 			t.Parallel()

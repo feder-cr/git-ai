@@ -18,6 +18,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/testhelper/testcfg"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 )
 
 func TestRepo_ContainsRef(t *testing.T) {
@@ -297,9 +298,70 @@ func TestRepo_WrittenReference(t *testing.T) {
 		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/cycle-a", "refs/heads/cycle-b")
 		gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", "refs/heads/cycle-b", "refs/heads/cycle-a")
 
-		written, err := repo.WrittenReference(ctx, "refs/heads/cycle-a")
+		_, err := repo.WrittenReference(ctx, "refs/heads/cycle-a")
+		testhelper.RequireGrpcCode(t, err, codes.FailedPrecondition)
+	})
+
+	t.Run("a name too long for the file system", func(t *testing.T) {
+		long := git.ReferenceName("refs/heads/" + strings.Repeat("x", 300))
+		written, err := repo.WrittenReference(ctx, long)
 		require.NoError(t, err)
-		require.Equal(t, git.ReferenceName("refs/heads/cycle-a"), written)
+		require.Equal(t, long, written)
+	})
+
+	t.Run("a chain of symbolic references up to what git follows", func(t *testing.T) {
+		gittest.WriteRef(t, cfg, repoPath, "refs/heads/end", commit)
+		previous := "refs/heads/end"
+		for hops := 1; hops <= 7; hops++ {
+			name := fmt.Sprintf("refs/heads/hop-%d", hops)
+			gittest.Exec(t, cfg, "-C", repoPath, "symbolic-ref", name, previous)
+			previous = name
+
+			written, err := repo.WrittenReference(ctx, git.ReferenceName(name))
+			if hops <= maxSymbolicHops {
+				require.NoError(t, err, "%d hops", hops)
+				require.Equal(t, git.ReferenceName("refs/heads/end"), written, "%d hops", hops)
+			} else {
+				testhelper.RequireGrpcCode(t, err, codes.FailedPrecondition)
+				require.Empty(t, written, "%d hops", hops)
+			}
+		}
+	})
+}
+
+// maxSymbolicHops is the longest chain of symbolic references that git-symbolic-ref(1) reads to its
+// end. It is git's limit, read by the test of WrittenReference; a new git that moves it fails there.
+const maxSymbolicHops = 4
+
+// TestRepo_WrittenReference_looseFiles checks what only the files backend reads by itself.
+func TestRepo_WrittenReference_looseFiles(t *testing.T) {
+	t.Parallel()
+	testhelper.SkipWithReftable(t, "the references are not files")
+
+	ctx := testhelper.Context(t)
+	cfg, repo, repoPath := setupRepo(t, withDisabledHooks())
+	commit := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch("main"))
+
+	t.Run("a symbolic link", func(t *testing.T) {
+		require.NoError(t, os.Symlink("refs/heads/main", filepath.Join(repoPath, "refs/heads/link")))
+
+		written, err := repo.WrittenReference(ctx, "refs/heads/link")
+		require.NoError(t, err)
+		require.Equal(t, git.ReferenceName("refs/heads/main"), written)
+	})
+
+	t.Run("a failed read does not tell where the repository is", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root reads every file")
+		}
+		gittest.WriteRef(t, cfg, repoPath, "refs/heads/unreadable", commit)
+		path := filepath.Join(repoPath, "refs/heads/unreadable")
+		require.NoError(t, os.Chmod(path, 0))
+		t.Cleanup(func() { require.NoError(t, os.Chmod(path, 0o644)) })
+
+		_, err := repo.WrittenReference(ctx, "refs/heads/unreadable")
+		require.ErrorIs(t, err, os.ErrPermission)
+		require.NotContains(t, err.Error(), repoPath)
 	})
 }
 

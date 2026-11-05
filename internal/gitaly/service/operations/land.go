@@ -93,13 +93,52 @@ func (s *Server) UserLand(ctx context.Context, in *gitalypb.UserLandRequest) (*g
 	return s.landOnce(ctx, in, committer, precheck, nil)
 }
 
+// validateLandBranch checks the name of the branch that a land updates.
+func validateLandBranch(branch []byte) error {
+	if len(branch) == 0 {
+		return errors.New("empty branch name")
+	}
+
+	if strings.HasPrefix(string(branch), "refs/") {
+		return errors.New("branch must be a branch name, not a full reference name")
+	}
+
+	if err := git.ValidateRevision(branch); err != nil {
+		return fmt.Errorf("invalid branch name: %w", err)
+	}
+
+	// git refuses to create a branch called HEAD, and ValidateReference does not see it as a
+	// branch because it only checks the full name.
+	if string(branch) == "HEAD" {
+		return errors.New("invalid branch name: HEAD is reserved")
+	}
+
+	if err := git.ValidateReference("refs/heads/" + string(branch)); err != nil {
+		return fmt.Errorf("invalid branch name: %w", err)
+	}
+
+	// The land records its identity in its update (doc/graft/PLAN11.md), which bounds the name of
+	// the branch. The request is refused here rather than its update, so that it fails alone, also
+	// in a batch.
+	if err := changelog.CheckLandReference("refs/heads/" + string(branch)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // landOnWrittenBranch makes a request for a symbolic branch a request for the branch it writes,
 // before anything of the land depends on the name: the lane that orders the land's compare-and-swap,
 // the policy that admits it, the identities and proposals kept per branch, and the tickets.
 //
 // A land only ever updates a branch, and those are all kept by branch, so a symbolic branch whose
 // target is no branch is refused, without saying what the target is: it may be hidden from the
-// caller.
+// caller, and so is a target it may not land on when named, as the request's checks say.
+//
+// A known limit: the branch is read here and again by the update. A retarget in between lands on what
+// the update reads, judged as ever by the hooks, but the update then does not match the branch of the
+// land's identities, and the identities are not recorded. It takes an operator, who retargets a
+// branch while it is being landed on.
 func (s *Server) landOnWrittenBranch(ctx context.Context, in *gitalypb.UserLandRequest) error {
 	requested := git.NewReferenceNameFromBranchName(string(in.GetBranch()))
 	written, err := s.localRepoFactory.Build(in.GetRepository()).WrittenReference(ctx, requested)
@@ -113,6 +152,9 @@ func (s *Server) landOnWrittenBranch(ctx context.Context, in *gitalypb.UserLandR
 	branch, isBranch := strings.CutPrefix(written.String(), "refs/heads/")
 	if !isBranch {
 		return structerr.NewFailedPrecondition("branch %q is a symbolic reference to something that is not a branch", string(in.GetBranch()))
+	}
+	if err := validateLandBranch([]byte(branch)); err != nil {
+		return structerr.NewInvalidArgument("branch %q is a symbolic reference to a branch that cannot be landed on: %w", string(in.GetBranch()), err)
 	}
 	in.Branch = []byte(branch)
 
@@ -562,32 +604,7 @@ func validateUserLandRequest(ctx context.Context, locator storage.Locator, in *g
 		return errors.New("empty user email")
 	}
 
-	if len(in.GetBranch()) == 0 {
-		return errors.New("empty branch name")
-	}
-
-	if strings.HasPrefix(string(in.GetBranch()), "refs/") {
-		return errors.New("branch must be a branch name, not a full reference name")
-	}
-
-	if err := git.ValidateRevision(in.GetBranch()); err != nil {
-		return fmt.Errorf("invalid branch name: %w", err)
-	}
-
-	// git refuses to create a branch called HEAD, and ValidateReference does not see it as a
-	// branch because it only checks the full name.
-	if string(in.GetBranch()) == "HEAD" {
-		return errors.New("invalid branch name: HEAD is reserved")
-	}
-
-	if err := git.ValidateReference("refs/heads/" + string(in.GetBranch())); err != nil {
-		return fmt.Errorf("invalid branch name: %w", err)
-	}
-
-	// The land records its identity in its update (doc/graft/PLAN11.md), which bounds the name of
-	// the branch. The request is refused here rather than its update, so that it fails alone, also
-	// in a batch.
-	if err := changelog.CheckLandReference("refs/heads/" + string(in.GetBranch())); err != nil {
+	if err := validateLandBranch(in.GetBranch()); err != nil {
 		return err
 	}
 

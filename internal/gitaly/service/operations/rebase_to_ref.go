@@ -38,6 +38,10 @@ func (s *Server) UserRebaseToRef(ctx context.Context, request *gitalypb.UserReba
 		return nil, structerr.NewInvalidArgument("invalid SourceSha")
 	}
 
+	if err := refuseSymbolicTargetRef(ctx, quarantineRepo, request.GetTargetRef()); err != nil {
+		return nil, err
+	}
+
 	// Resolve the current state of the target reference. We do not care whether it
 	// exists or not, but what we do want to assert is that the target reference doesn't
 	// change while we compute the merge commit as a small protection against races.
@@ -59,10 +63,6 @@ func (s *Server) UserRebaseToRef(ctx context.Context, request *gitalypb.UserReba
 				WithMetadata("old_object_id", expectedOldOID)
 		}
 	} else if targetRef, err := quarantineRepo.GetReference(ctx, git.ReferenceName(request.GetTargetRef())); err == nil {
-		if targetRef.IsSymbolic {
-			return nil, structerr.NewFailedPrecondition("target reference is symbolic: %q", request.GetTargetRef())
-		}
-
 		oid, err := objectHash.FromHex(targetRef.Target)
 		if err != nil {
 			return nil, structerr.NewInternal("invalid target revision: %w", err)

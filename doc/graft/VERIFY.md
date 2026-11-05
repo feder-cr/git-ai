@@ -120,9 +120,11 @@ Unknown keys are an error.
   through git's DWIM revision rules, so that a branch named like them
   (`refs/heads/refs/graft/green/main`, `refs/heads/refs/heads/main`) is never
   taken for them. A consumer has to read the green ref the same way (`ListRefs`
-  with the full name, `git show-ref --verify`): an agent may create that branch,
-  and until the green ref exists a revision lookup such as `FindCommit` or
-  `git rev-parse` answers with the agent's commit.
+  with the full name, `git show-ref --verify`): until the green ref exists, a
+  revision lookup such as `FindCommit` or `git rev-parse` answers with such a
+  branch. Agents can no longer create or update one
+  ([AGENT-SECURITY](AGENT-SECURITY.md)), but one from before that rule, or one
+  an operator made, still answers.
 
 ## Auto-revert
 

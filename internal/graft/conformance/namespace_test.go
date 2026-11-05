@@ -3,13 +3,19 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/status"
 
+	"github.com/feder-cr/git-ai/internal/git/gittest"
 	"github.com/feder-cr/git-ai/internal/gitaly/config"
+	"github.com/feder-cr/git-ai/internal/graft/corestore"
+	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
 
@@ -325,6 +331,298 @@ func TestConformancePolicyJudgesTheTargetOfSymbolicBranches(t *testing.T) {
 					require.NoError(t, rpc.call(backend.ctx, operations{client, f}, "alias"), f.session.log.String())
 					require.NotEqual(t, f.main, f.refs()["refs/heads/allowed"])
 					require.Equal(t, f.main, f.refs()["refs/heads/protected"])
+				})
+			}
+		})
+	}
+}
+
+// TestConformanceRefusalsDoNotTellTheTarget writes as an agent through a symbolic branch into a
+// reference it does not see: the refusal, with its details, does not name the reference. A policy that
+// denies the namespace reports the changes it was asked about, so it takes part.
+func TestConformanceRefusalsDoNotTellTheTarget(t *testing.T) {
+	t.Parallel()
+
+	graft := agentGraft(everyOperationRPC...)
+	graft.Policy = append([]config.GraftPolicyRule{{Refs: []string{"refs/graft/**"}, Allow: false}}, graft.Policy...)
+	backend := newGitaiBackend(t, gitaiMode{name: "off-standalone", standalone: true}, graft)
+	client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+	for _, rpc := range aliasWrites {
+		if rpc.name == "push" {
+			continue
+		}
+		t.Run(rpc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t, backend.newRemote(t))
+			f.session.local(f.path, "update-ref", "refs/graft/hidden/secret", f.main)
+			f.session.local(f.path, "symbolic-ref", "refs/heads/alias", "refs/graft/hidden/secret")
+
+			err := rpc.call(backend.ctx, operations{client, f}, "alias")
+			require.Error(t, err)
+			response := fmt.Sprint(status.Convert(err).Proto())
+			require.NotContains(t, response, "secret")
+			require.NotContains(t, response, "hidden")
+		})
+	}
+}
+
+// TestConformanceNameTooLongForTheFileSystem names a branch git cannot store as a file: git refuses
+// it, not the server's read of whether it is symbolic, whose failure would tell where the repository
+// is. A limit of this test: the details of the answer hold git-update-ref(1)'s stderr, with the path
+// that git failed to lock, as any failure of that command does (updateref.closeWithError). So only
+// the message is compared.
+func TestConformanceNameTooLongForTheFileSystem(t *testing.T) {
+	t.Parallel()
+
+	backend := newGitaiBackend(t, gitaiMode{name: "off-standalone", standalone: true}, agentGraft(everyOperationRPC...))
+	client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+	for _, rpc := range rpcsNamed("UserCommitFiles", "UserCreateBranch", "UserUpdateBranch", "UserDeleteBranch", "UserLand") {
+		t.Run(rpc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t, backend.newRemote(t))
+			before := f.refs()
+			err := rpc.call(backend.ctx, operations{client, f}, strings.Repeat("x", 300))
+			if testhelper.IsReftableEnabled() && err == nil {
+				// A reftable stores the name.
+				return
+			}
+			require.Error(t, err)
+			require.NotContains(t, status.Convert(err).Message(), backend.cfg.Storages[0].Path)
+			require.NotContains(t, status.Convert(err).Message(), "loose reference")
+			require.Empty(t, changedRefs(before, f.refs()))
+		})
+	}
+}
+
+// TestConformanceChainsLongerThanGitFollows writes through a chain of symbolic branches: up to what
+// git follows the write reaches the end of the chain; past it, it is refused, and no branch of the
+// chain stops being symbolic.
+func TestConformanceChainsLongerThanGitFollows(t *testing.T) {
+	t.Parallel()
+
+	backend := newGitaiBackend(t, gitaiMode{name: "off-standalone", standalone: true}, agentGraft(everyOperationRPC...))
+	client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+	// a5 is 1 hop from real, a0 is 6.
+	links := []string{"a5", "a4", "a3", "a2", "a1", "a0"}
+	for hops, top := range links {
+		hops++
+		t.Run(top, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t, backend.newRemote(t))
+			f.session.local(f.path, "update-ref", "refs/heads/real", f.main)
+			previous := "refs/heads/real"
+			for _, link := range links {
+				f.session.local(f.path, "symbolic-ref", "refs/heads/"+link, previous)
+				previous = "refs/heads/" + link
+			}
+
+			err := operations{client, f}.updateBranch(backend.ctx, top, f.main)
+			if hops <= 4 {
+				require.NoError(t, err)
+				require.Equal(t, f.source, f.session.local(f.path, "rev-parse", "refs/heads/real"))
+			} else {
+				require.Equal(t, "FailedPrecondition", outcome(err))
+				require.Equal(t, f.main, f.session.local(f.path, "rev-parse", "refs/heads/real"))
+			}
+			for i, link := range links {
+				want := "refs/heads/real"
+				if i > 0 {
+					want = "refs/heads/" + links[i-1]
+				}
+				require.Equal(t, want, f.session.local(f.path, "symbolic-ref", "--no-recurse", "refs/heads/"+link), link)
+			}
+		})
+	}
+}
+
+// TestConformanceSymbolicLinkBranch writes through a branch that is a symbolic link, which git reads as
+// a symbolic reference: the target moves and the link stays.
+func TestConformanceSymbolicLinkBranch(t *testing.T) {
+	t.Parallel()
+	testhelper.SkipWithReftable(t, "the references are not files")
+
+	backend := newGitaiBackend(t, gitaiMode{name: "off-standalone", standalone: true}, agentGraft(everyOperationRPC...))
+	client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+	f := newFixture(t, backend.newRemote(t))
+	f.session.local(f.path, "update-ref", "refs/heads/real", f.main)
+	link := filepath.Join(f.path, "refs/heads/link")
+	require.NoError(t, os.Symlink("refs/heads/real", link))
+
+	require.NoError(t, operations{client, f}.updateBranch(backend.ctx, "link", f.main))
+
+	require.Equal(t, f.source, f.session.local(f.path, "rev-parse", "refs/heads/real"))
+	info, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&os.ModeSymlink, "the link stays a link")
+}
+
+// TestConformanceToRefRefusesSymbolicTargets writes the merge and the rebase of the *ToRef RPCs to a
+// target_ref that is symbolic: its target is outside of the namespace the RPCs validate. Whether the
+// target exists, and whether the request expects an old value, changes nothing.
+func TestConformanceToRefRefusesSymbolicTargets(t *testing.T) {
+	t.Parallel()
+
+	backend := newGitaiBackend(t, gitaiMode{name: "off-standalone", standalone: true}, agentGraft(everyOperationRPC...))
+	client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+	const targetRef = "refs/merge-requests/1/merge"
+
+	for _, kind := range []string{"UserMergeToRef", "UserRebaseToRef"} {
+		for _, target := range []string{"refs/graft/symbolic", "refs/heads/allowed", "refs/graft/absent", "refs/heads/absent"} {
+			for _, expectOld := range []bool{false, true} {
+				if expectOld && strings.HasSuffix(target, "absent") {
+					continue
+				}
+				t.Run(fmt.Sprintf("%s/%s/expectOld=%v", kind, target, expectOld), func(t *testing.T) {
+					t.Parallel()
+
+					f := newFixture(t, backend.newRemote(t))
+					old := ""
+					if !strings.HasSuffix(target, "absent") {
+						f.session.local(f.path, "update-ref", target, f.main)
+					}
+					if expectOld {
+						old = f.main
+					}
+					f.session.local(f.path, "symbolic-ref", targetRef, target)
+					before := f.refs()
+
+					var err error
+					if kind == "UserMergeToRef" {
+						_, err = client.UserMergeToRef(backend.ctx, &gitalypb.UserMergeToRefRequest{
+							Repository: f.repo, User: gittest.TestUser, SourceSha: f.source, TargetRef: []byte(targetRef),
+							FirstParentRef: []byte("refs/heads/main"), Message: []byte("merge"), ExpectedOldOid: old,
+						})
+					} else {
+						_, err = client.UserRebaseToRef(backend.ctx, &gitalypb.UserRebaseToRefRequest{
+							Repository: f.repo, User: gittest.TestUser, SourceSha: f.source, TargetRef: []byte(targetRef),
+							FirstParentRef: []byte("refs/heads/main"), ExpectedOldOid: old,
+						})
+					}
+					require.Equal(t, "FailedPrecondition", outcome(err), "%v", err)
+					require.ErrorContains(t, err, "target reference is symbolic")
+					require.Empty(t, changedRefs(before, f.refs()))
+				})
+			}
+		}
+	}
+}
+
+// decoyNamespaces are the namespaces whose references git's DWIM rules take for a full name.
+var decoyNamespaces = []string{"refs/refs/", "refs/tags/refs/", "refs/heads/refs/", "refs/remotes/refs/"}
+
+// TestConformanceAgentCannotPlantDecoys pushes into each decoy namespace as an agent, in every mode: it
+// may not create or update a reference there, it may delete an old one, and the shared token may
+// still create one. UserCreateBranch with a full name is the RPC's way into refs/heads/refs/.
+func TestConformanceAgentCannotPlantDecoys(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range matrixModes() {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := newGitaiBackend(t, mode, agentGraft(everyOperationRPC...))
+			client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+			for _, namespace := range decoyNamespaces {
+				t.Run(namespace, func(t *testing.T) {
+					t.Parallel()
+
+					f := newFixture(t, backend.newRemote(t))
+					name := namespace + "graft/green/main"
+
+					before := f.refs()
+					require.NotZero(t, f.session.push(f.client, "source:"+name), "creating %s", name)
+					require.Empty(t, changedRefs(before, f.refs()))
+
+					// The shared token: a feature of the server or an operator. The storage core has to
+					// see it, so it does not go on the disk behind its back.
+					stream, err := gitalypb.NewRefServiceClient(backend.operatorConnection(t)).UpdateReferences(backend.ctx)
+					require.NoError(t, err)
+					require.NoError(t, stream.Send(&gitalypb.UpdateReferencesRequest{Repository: f.repo, Updates: []*gitalypb.UpdateReferencesRequest_Update{
+						{Reference: []byte(name), NewObjectId: []byte(f.main)},
+					}}))
+					_, err = stream.CloseAndRecv()
+					require.NoError(t, err)
+
+					before = f.refs()
+					require.Contains(t, before, name)
+					require.NotZero(t, f.session.push(f.client, "--force", "source:"+name), "updating %s", name)
+					require.Empty(t, changedRefs(before, f.refs()))
+
+					// refs/remotes/ is hidden on a push whoever pushes, so that a delete is refused
+					// before the reservation is asked (git's receive.hideRefs).
+					if namespace == "refs/remotes/refs/" {
+						return
+					}
+					require.Zero(t, f.session.push(f.client, ":"+name), "deleting %s\n%s", name, f.session.log.String())
+					require.Equal(t, []string{name}, changedRefs(before, f.refs()))
+				})
+			}
+
+			t.Run("UserCreateBranch", func(t *testing.T) {
+				t.Parallel()
+
+				f := newFixture(t, backend.newRemote(t))
+				before := f.refs()
+				err := operations{client, f}.createBranch(backend.ctx, "refs/graft/green/main", "main")
+				require.Equal(t, "PermissionDenied", outcome(err), "%v", err)
+				require.Empty(t, changedRefs(before, f.refs()))
+			})
+		})
+	}
+}
+
+// TestConformanceSymbolicBranchInTheStorageCore writes through a symbolic branch that the storage core
+// knows of, in the modes with a core: the database keeps the branch symbolic, moves its target as the
+// disk does, and agrees with the disk.
+func TestConformanceSymbolicBranchInTheStorageCore(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range gitaiModes() {
+		if mode.coreMode == "" {
+			continue
+		}
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := newGitaiBackend(t, mode, agentGraft(everyOperationRPC...))
+			client := gitalypb.NewOperationServiceClient(agentConnection(t, backend))
+
+			for _, rpc := range aliasWrites {
+				t.Run(rpc.name, func(t *testing.T) {
+					t.Parallel()
+
+					ctx := context.Background()
+					f := newFixture(t, backend.newRemote(t))
+					repository, err := backend.core.Meta.GetRepository(ctx, corestore.RepoKey{
+						Storage: f.repo.GetStorageName(), RelativePath: f.repo.GetRelativePath(),
+					})
+					require.NoError(t, err)
+					_, err = backend.core.Meta.CommitChangeset(ctx, corestore.ChangesetInput{
+						RepoID: repository.ID, Operation: "conformance", Actor: "conformance", NodeID: backend.core.NodeID,
+						Updates: []corestore.RefUpdate{{Name: "refs/heads/alias", Expect: corestore.ExpectValue, New: corestore.SymbolicTarget("refs/heads/main")}},
+					})
+					require.NoError(t, err)
+					// The local copy holds it too, as after a sync.
+					f.session.local(f.path, "symbolic-ref", "refs/heads/alias", "refs/heads/main")
+
+					callErr := rpc.call(backend.ctx, operations{client, f}, "alias")
+
+					database, _, err := backend.core.Meta.Refs(ctx, repository.ID)
+					require.NoError(t, err)
+					require.Equal(t, "ref:refs/heads/main", string(database["refs/heads/alias"]), "%s: %v", rpc.name, callErr)
+					require.Equal(t, "refs/heads/main", f.session.local(f.path, "symbolic-ref", "--quiet", "refs/heads/alias"))
+					require.Equal(t, f.refs()["refs/heads/main"], string(database["refs/heads/main"]), "%s: %v", rpc.name, callErr)
+					if callErr == nil {
+						require.NotEqual(t, f.main, string(database["refs/heads/main"]), "%s moved the target", rpc.name)
+					}
 				})
 			}
 		})

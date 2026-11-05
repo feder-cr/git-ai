@@ -114,6 +114,6 @@ func testPolicyHookDecidesForAgentUpdates(t *testing.T, standalone bool) {
 	denials := hookDenials()
 	require.Len(t, denials, len(want)+2)
 	for _, denial := range denials[len(want):] {
-		require.True(t, strings.HasPrefix(denial, `"refs/graft/x" is under refs/graft/, which is reserved for the server`), denial)
+		require.True(t, strings.HasPrefix(denial, `a reference under refs/graft/ is reserved for the server`), denial)
 	}
 }

@@ -227,6 +227,10 @@ func (u *UpdaterWithHooks) UpdateReference(
 
 	changes := fmt.Sprintf("%s %s %s\n", oldrev, newrev, written)
 
+	if err := hook.CheckAgentReservation(ctx, changes); err != nil {
+		return err
+	}
+
 	receiveHooksPayload := gitcmd.UserDetails{
 		UserID:   user.GetGlId(),
 		Username: user.GetGlUsername(),

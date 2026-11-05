@@ -188,6 +188,16 @@ reference-transaction hook, which sees `refs/graft/x`, refuses it. The combined
 update of a land batch, which runs without an agent identity, is held to the
 reservation by the hook as well.
 
+A denial of the reservation does not name the reference: an agent that wrote
+through a symbolic branch named something else, and the target may be hidden from
+it. The server's log has the name.
+
+Git's DWIM rules take `refs/tags/refs/heads/x` for `refs/heads/x` while that does
+not exist, so such a reference can answer for another one. Agents neither create
+nor update a reference under `refs/refs/`, `refs/tags/refs/`, `refs/heads/refs/` or
+`refs/remotes/refs/`, in every mode, by the same two last layers. They may delete
+one, so that an old one can be cleaned up. The shared token is not restricted.
+
 Every other RPC that is not on the allowlist (for example the other
 `OperationService` RPCs such as `UserMergeBranch`, or the other `SSHService`
 RPCs) is denied by default and can be enabled with `graft.agent_rpcs`, except
@@ -260,7 +270,10 @@ which is what an update writes, however the update comes. A rule that allows
 the pre-receive hook also judges the name that was pushed. Creating a symbolic
 branch needs the rights of an operator. `UserLand` takes a symbolic branch for
 the branch it points to, in all it records, and refuses one that points to
-anything else.
+anything else. A cycle of symbolic references, or a chain longer than
+`git symbolic-ref` follows (more than four hops), is refused with
+`FailedPrecondition`, as it cannot be judged. `UserMergeToRef` and
+`UserRebaseToRef` refuse a symbolic `target_ref`.
 
 One known limit, accepted: a land with `resolve_conflicts` is checked against
 the standalone policy before the resolver is called, so an actor the policy

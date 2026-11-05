@@ -51,7 +51,7 @@ type OperationServiceClient interface {
 	// hooks and contacts Rails to verify that the user is allowed to create the branch. The
 	// following known error conditions may happen:
 	//
-	//   - `FailedPrecondition` if the Git revision provided in start_point can't be found or updated.
+	//   - `FailedPrecondition` if start_point can't be resolved to a commit or the branch can't be updated.
 	//   - `InvalidArgument` if the commit ID resolved from the start_point can't be parsed.
 	//   - `PermissionDenied` with an embedded `UserCreateBranchError` if any custom hooks return a
 	//     non-zero exit code.
@@ -404,7 +404,7 @@ type OperationServiceServer interface {
 	// hooks and contacts Rails to verify that the user is allowed to create the branch. The
 	// following known error conditions may happen:
 	//
-	//   - `FailedPrecondition` if the Git revision provided in start_point can't be found or updated.
+	//   - `FailedPrecondition` if start_point can't be resolved to a commit or the branch can't be updated.
 	//   - `InvalidArgument` if the commit ID resolved from the start_point can't be parsed.
 	//   - `PermissionDenied` with an embedded `UserCreateBranchError` if any custom hooks return a
 	//     non-zero exit code.
