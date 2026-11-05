@@ -110,6 +110,8 @@ type Voter struct {
 type committedEntry struct {
 	repoID int64
 	seq    uint64
+	// invocation is the process of the transaction, empty when it has none.
+	invocation string
 }
 
 // preparedPack is the outcome of the Preparing phase of a transaction.
@@ -546,9 +548,15 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 	// The entry is remembered before the fault point, so that the Aborted phase
 	// of a transaction that fails after the database commit is recognized.
 	v.pending.add(pendingKey(payload.Repo, changes), committedEntry{
-		repoID: record.ID,
-		seq:    res.Seq,
+		repoID:     record.ID,
+		seq:        res.Seq,
+		invocation: payload.Changelog.Invocation,
 	}, time.Now())
+	// A process that ended during this phase (git was killed) reports nothing more, and its end
+	// did not find this entry.
+	if invocation := payload.Changelog.Invocation; invocation != "" && !gitcmd.InvocationLive(invocation) {
+		v.forgetCommitted(invocation)
+	}
 
 	// After the entry, so that a failure here counts as a local failure in the
 	// Aborted phase: the database holds the changeset, catch-up repairs the
@@ -933,8 +941,10 @@ func (v *Voter) admit(ctx context.Context, payload gitcmd.HooksPayload, changes 
 
 	if !gitcmd.OnInvocationExit(invocation, func() {
 		cancel()
+		v.forgetTransaction(key, invocation)
 		v.releaseUnreported(repoPath, key, invocation)
 	}) {
+		v.forgetTransaction(key, invocation)
 		return
 	}
 
@@ -975,6 +985,27 @@ func (v *Voter) TransactionStarts(ctx context.Context, payload gitcmd.HooksPaylo
 		return
 	}
 	v.releaseUnreported(repoPath, localrefs.Key(key), payload.Changelog.Invocation)
+}
+
+// forgetTransaction drops what the voter keeps between the phases of a transaction whose process
+// ended: no later phase comes for it. An uploaded pack stays in the bucket as an orphan, like the pack
+// of any failed write.
+func (v *Voter) forgetTransaction(key localrefs.Key, invocation string) {
+	v.packs.take(key, time.Now())
+	v.forgetCommitted(invocation)
+}
+
+// forgetCommitted drops the transactions of a process that ended which the database committed and of
+// which git reported no end. git may or may not have committed them: the catch-up repairs the local
+// repository if it did not. An entry of the same hook input from another process is that process's.
+func (v *Voter) forgetCommitted(invocation string) {
+	for _, entry := range v.pending.removeIf(func(e committedEntry) bool { return e.invocation == invocation }) {
+		v.logger.WithFields(log.Fields{
+			"repo_id":    entry.repoID,
+			"seq":        entry.seq,
+			"invocation": invocation,
+		}).Warn("storage core: git ended without reporting a transaction that the database committed, the next catch-up repairs the local repository if it is behind")
+	}
 }
 
 // releaseUnreported releases the admission of a transaction that ended without a
@@ -1330,6 +1361,23 @@ func (p *pendingSet[T]) has(key [32]byte, now time.Time) bool {
 
 	el, ok := p.items[key]
 	return ok && now.Sub(el.Value.(*pendingEntry[T]).added) < pendingTTL
+}
+
+// removeIf removes the entries whose value matches, and returns their values.
+func (p *pendingSet[T]) removeIf(match func(T) bool) []T {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var removed []T
+	for el := p.order.Front(); el != nil; {
+		next := el.Next()
+		if value := el.Value.(*pendingEntry[T]).value; match(value) {
+			p.removeLocked(el)
+			removed = append(removed, value)
+		}
+		el = next
+	}
+	return removed
 }
 
 // len returns the number of entries, expired ones included.
