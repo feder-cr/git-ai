@@ -50,4 +50,10 @@ Gitaly bundles two versions of Git:
 - The latest version from the `master` branch (using a commit that's at least a week old), which is used when the `gitaly_git_master` feature flag is enabled.
 - The preceding stable version for rollback purposes, which is used when the feature flag is disabled.
 
+In gitai the flag is off by default, so the second one (`GIT_VERSION_PREV`, binaries with the
+`-prev` suffix) serves every repository that does not use the MVCC reference backend (which has its
+own `-mvcc` build). It is Git v2.56.0. The `master` pin (`GIT_VERSION_MASTER`) is a commit between
+v2.56.0-rc1 and v2.56.0, older than the default. The repository has no renovate configuration, so
+both pins are updated by hand.
+
 [`renovate-gitlab-bot`](https://gitlab.com/gitlab-org/frontend/renovate-gitlab-bot) is configured to update the Git versions defined in the Gitaly Makefile and create a merge request every two weeks.

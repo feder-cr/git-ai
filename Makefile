@@ -165,7 +165,10 @@ GIT_VERSION ?=
 # should be updated to the timestamp of the commit.
 # renovate: 1789663697000
 GIT_VERSION_MASTER ?= 3bbf43483e3954291b9fb4caa228eedb9dd528c2
-GIT_VERSION_PREV ?= 1ea786d14a1bb47399ce7b5f1e5885d65139b35f
+#
+# GIT_VERSION_PREV is the default bundled Git: the one that serves every repository except MVCC
+# ones unless the git_master feature flag selects the master build. It is the release v2.56.0.
+GIT_VERSION_PREV ?= a018953688f1b10bddf91bff8747068f5f4746a4
 #
 # GIT_VERSION_MVCC is a commit hash from Git's MVCC reference backend development branch. This branch
 # diverges from upstream Git and is rebased against Git's master branch regularly. The resulting
