@@ -422,8 +422,9 @@ func (s *sweepKillServer) killAfterDatabaseCommit(t *testing.T) []string {
 
 // TestSweepKilledAfterTheDatabaseCommitThenASweepWithoutCatchUp is the case of a kill that leaves the
 // database ahead, followed by a writer that does not go through the catch-up of the gate first: the
-// next sweep lists the references the database no longer has and deletes them locally. Its
-// transaction changes nothing in the database, so the references agree without a catch-up.
+// next sweep lists the references the database no longer has, and the database refuses its deletions
+// (they expect a value it does not hold). That sweep fails and changes nothing, the admission is free
+// after it, and the catch-up repairs the local repository.
 func TestSweepKilledAfterTheDatabaseCommitThenASweepWithoutCatchUp(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, dialect sqlstore.Dialect) {
 		s := newSweepKillServer(t, dialect)
@@ -432,14 +433,20 @@ func TestSweepKilledAfterTheDatabaseCommitThenASweepWithoutCatchUp(t *testing.T)
 		s.requireAdmissionFree(t)
 		head := s.headSeq(t)
 
-		require.NoError(t, s.sweep(s.ctx))
+		require.Error(t, s.sweep(s.ctx), "the database refuses a deletion based on a stale local value")
 		s.requireAdmissionFree(t)
-		require.Equal(t, head, s.headSeq(t), "the database has nothing to add")
+		require.Equal(t, head, s.headSeq(t))
 		for _, name := range names {
-			require.False(t, s.localRefExists(t, name))
+			require.True(t, s.localRefExists(t, name), "git aborted the transaction")
 		}
 		s.requireNothingLeft(t)
+
 		s.requireConsistent(t)
+		for _, name := range names {
+			require.False(t, s.localRefExists(t, name), "the catch-up repaired the local repository")
+		}
+		require.NoError(t, s.sweep(s.ctx))
+		s.requireAdmissionFree(t)
 	})
 }
 
