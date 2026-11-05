@@ -23,7 +23,25 @@ machine.
 ## Reference name length
 
 Reference names, and symbolic reference targets, over 1024 bytes are refused.
-An existing reference over the limit can still be read and deleted.
+An existing reference over the limit can still be read and deleted. An object
+pool's names under `refs/remotes/origin/` may be 15 bytes longer, which is what
+the pool's refspec adds to a name of its source.
+
+A repository that holds such a reference fails, with a permanent error, whatever
+copies its references until the reference is deleted: forking it, creating or
+replicating a replica, creating or fetching into an object pool, restoring a
+backup, `FetchBundle`, `CreateRepositoryFromBundle`, `RewriteHistory` and
+importing it into the storage core. One such reference on a remote fails the
+whole of a mirror's `FetchRemote`.
+
+To find such references, and delete one:
+
+    git -C <repository> for-each-ref --format='%(refname)' | awk 'length($0) > 1024'
+    git -C <repository> update-ref -d <reference>
+
+The `DeleteRefs` RPC and a push that deletes the reference work too. A symbolic
+reference that points at nothing, other than `HEAD`, is not checked when a
+repository is created from a copy.
 
 ## Security limitations
 

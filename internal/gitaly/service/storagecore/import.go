@@ -3,8 +3,10 @@ package storagecore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +105,19 @@ func (s *server) ImportRepository(ctx context.Context, req *gitalypb.ImportRepos
 	}
 	defer release()
 
+	// A repository with a name over the limit cannot be imported, so it is refused before anything
+	// is registered or uploaded: an incomplete registration holds back the writes that would clean
+	// it up. A complete import only brings history, and leaves the references alone.
+	if existing, err := core.Meta.GetRepository(ctx, key); err != nil || existing.HeadSeq == 0 {
+		refs, err := gitops.ReadRefs(ctx, local)
+		if err != nil {
+			return nil, structerr.NewInternal("read references: %w", err)
+		}
+		if err := refuseLongReferenceNames(refs); err != nil {
+			return nil, err
+		}
+	}
+
 	// Step 1.
 	reg, err := s.registerImport(ctx, core, key, repoPath, objectHash.Format)
 	if err != nil {
@@ -145,6 +160,9 @@ func (s *server) ImportRepository(ctx context.Context, req *gitalypb.ImportRepos
 	refs, err := gitops.ReadRefs(ctx, local)
 	if err != nil {
 		return nil, structerr.NewInternal("read references: %w; %s", err, resumeHint)
+	}
+	if err := refuseLongReferenceNames(refs); err != nil {
+		return nil, err
 	}
 	pack, err := buildImportPack(ctx, local, refs, tmpDir)
 	if err != nil {
@@ -264,6 +282,36 @@ type registration struct {
 	// changelogEntries and reviews are the numbers of changelog entries and
 	// reviews recorded with the registration.
 	changelogEntries, reviews int
+}
+
+// refuseLongReferenceNames refuses the import of refs when a name or a symbolic target is over the limit
+// on reference names. It counts them and quotes the beginning of the first few, for the operator who
+// has to delete them. The error is permanent: retrying the import does not help.
+func refuseLongReferenceNames(refs map[string]corestore.Target) error {
+	const (
+		quoted      = 3
+		quotedBytes = 64
+	)
+
+	var long []string
+	for _, name := range sortedNames(refs) {
+		target := refs[name]
+		if git.ValidateReferenceNameLength(name) != nil || (target.IsSymbolic() && git.ValidateReferenceNameLength(target.SymbolicName()) != nil) {
+			long = append(long, name)
+		}
+	}
+	if len(long) == 0 {
+		return nil
+	}
+
+	first := make([]string, 0, quoted)
+	for _, name := range long[:min(len(long), quoted)] {
+		first = append(first, fmt.Sprintf("%.*q...", quotedBytes, name))
+	}
+
+	return structerr.NewFailedPrecondition(
+		"%d references have a name or symbolic target over the limit of %d bytes, starting with %s: delete them before importing (doc/graft/LIMITATIONS.md)",
+		len(long), git.MaxReferenceNameLength, strings.Join(first, ", "))
 }
 
 // registerImport is step 1 of the import: it registers an untracked

@@ -98,6 +98,11 @@ func (e FetchFailedError) Error() string {
 	return e.err.Error()
 }
 
+// Unwrap returns the cause of the failure.
+func (e FetchFailedError) Unwrap() error {
+	return e.err
+}
+
 // FetchRemote fetches changes from the specified remote. Returns an FetchFailedError error in case
 // the fetch itself failed.
 func (repo *Repo) FetchRemote(ctx context.Context, remoteName string, opts FetchOpts) error {
@@ -156,6 +161,9 @@ func (repo *Repo) FetchRemote(ctx context.Context, remoteName string, opts Fetch
 	}
 
 	if err := cmd.Wait(); err != nil {
+		if refusal := gitcmd.ReferenceNameLengthRefusal(stderr.Bytes()); refusal != nil {
+			return FetchFailedError{refusal}
+		}
 		return FetchFailedError{errorWithStderr(err, stderr.Bytes())}
 	}
 
@@ -221,6 +229,9 @@ func (repo *Repo) FetchInternal(
 		},
 		commandOptions...,
 	); err != nil {
+		if refusal := gitcmd.ReferenceNameLengthRefusal(stderr.Bytes()); refusal != nil {
+			return FetchFailedError{refusal}
+		}
 		return FetchFailedError{errorWithStderr(err, stderr.Bytes())}
 	}
 

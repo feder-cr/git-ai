@@ -101,6 +101,9 @@ func (o *ObjectPool) FetchFromOrigin(ctx context.Context, origin *localrepo.Repo
 			Key: "advice.fetchShowForcedUpdates", Value: "false",
 		}),
 	); err != nil {
+		if refusal := gitcmd.ReferenceNameLengthRefusal(stderr.Bytes()); refusal != nil {
+			return refusal
+		}
 		return fmt.Errorf("fetch into object pool: %w, stderr: %q", err,
 			stderr.String())
 	}

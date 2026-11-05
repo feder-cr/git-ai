@@ -61,6 +61,53 @@ func TestCreate_longReferenceNames(t *testing.T) {
 		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})
 
+	createWithHead := func(t *testing.T, targetLength int) (string, error) {
+		t.Helper()
+
+		repo := &gitalypb.Repository{StorageName: cfg.Storages[0].Name, RelativePath: gittest.NewRepositoryName(t)}
+		err := Create(ctx, logger, locator, gitCmdFactory, catfileCache, &transaction.MockManager{}, counter.NewRepositoryCounter(cfg.Storages), repo,
+			func(seed *gitalypb.Repository) error {
+				seedPath, err := locator.GetRepoPath(ctx, seed, storage.WithRepositoryVerificationSkipped())
+				require.NoError(t, err)
+
+				// An unborn HEAD, as git-clone(1) copies it from a remote: no reference exists.
+				target := gittest.ReferenceNameOfLength(t, "refs/heads/", targetLength)
+				return os.WriteFile(filepath.Join(seedPath, "HEAD"), []byte("ref: "+target.String()+"\n"), 0o644)
+			},
+		)
+
+		return filepath.Join(cfg.Storages[0].Path, repo.GetRelativePath()), err
+	}
+
+	t.Run("an unborn HEAD over the limit lands nothing", func(t *testing.T) {
+		path, err := createWithHead(t, 1025)
+		require.Equal(t, codes.InvalidArgument, status.Code(err), "%v", err)
+		require.ErrorContains(t, err, "over the limit of 1024 bytes")
+
+		_, statErr := os.Stat(path)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("an unborn HEAD of exactly the limit lands", func(t *testing.T) {
+		_, err := createWithHead(t, 1024)
+		require.NoError(t, err)
+	})
+
+	t.Run("a pool keeps its allowance", func(t *testing.T) {
+		repo := &gitalypb.Repository{StorageName: cfg.Storages[0].Name, RelativePath: gittest.NewObjectPoolName(t)}
+		err := Create(ctx, logger, locator, gitCmdFactory, catfileCache, &transaction.MockManager{}, counter.NewRepositoryCounter(cfg.Storages), repo,
+			func(seed *gitalypb.Repository) error {
+				seedPath, err := locator.GetRepoPath(ctx, seed, storage.WithRepositoryVerificationSkipped())
+				require.NoError(t, err)
+
+				commitID := gittest.WriteCommit(t, cfg, seedPath)
+				gittest.SeedPackedReference(t, seedPath, gittest.ReferenceNameOfLength(t, "refs/remotes/origin/", 1039), commitID)
+				return nil
+			},
+		)
+		require.NoError(t, err)
+	})
+
 	t.Run("a name of exactly the limit lands", func(t *testing.T) {
 		path, err := create(t, 1024)
 		require.NoError(t, err)

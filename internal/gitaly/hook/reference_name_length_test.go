@@ -20,6 +20,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/gitlab"
 	"github.com/feder-cr/git-ai/internal/testhelper"
 	"github.com/feder-cr/git-ai/internal/testhelper/testcfg"
+	"github.com/feder-cr/git-ai/proto/go/gitalypb"
 )
 
 // These tests call the hooks directly, so no git process sees a name over the limit.
@@ -134,4 +135,26 @@ func TestReferenceTransactionHook_longReferenceNames(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestValidateReferenceNameLengths_objectPool decides on names only: no git process sees them.
+func TestValidateReferenceNameLengths_objectPool(t *testing.T) {
+	t.Parallel()
+
+	pool := &gitalypb.Repository{RelativePath: gittest.NewObjectPoolName(t)}
+	repository := &gitalypb.Repository{RelativePath: "repository.git"}
+	zero := gittest.DefaultObjectHash.ZeroOID.String()
+	oid := strings.Repeat("1", gittest.DefaultObjectHash.EncodedLen())
+
+	validate := func(repo *gitalypb.Repository, prefix string, length int) error {
+		line := fmt.Sprintf("%s %s %s\n", zero, oid, gittest.ReferenceNameOfLength(t, prefix, length))
+		return ValidateReferenceNameLengths(repo, gittest.DefaultObjectHash, []byte(line))
+	}
+
+	// The longest name of a source, 1024 bytes, is 1039 bytes under the refspec of its pool.
+	require.NoError(t, validate(pool, "refs/remotes/origin/", 1024+15))
+	require.ErrorContains(t, validate(pool, "refs/remotes/origin/", 1024+16), "over the limit of 1039 bytes")
+	// The allowance is for that namespace of a pool only.
+	require.ErrorContains(t, validate(pool, "refs/heads/", 1025), "over the limit of 1024 bytes")
+	require.ErrorContains(t, validate(repository, "refs/remotes/origin/", 1025), "over the limit of 1024 bytes")
 }
