@@ -186,3 +186,45 @@ func TestDeleteConflictingReferenceOnlyInAuthoritativeMode(t *testing.T) {
 		require.Contains(t, refs, "refs/heads/a", "nothing is deleted")
 	})
 }
+
+// TestDeleteConflictingReferenceOnTheNodeThatKeepsTheOtherSide covers the usual repair: the node
+// caught up one side of the pair before an older version wrote the other, so it is stuck, and the
+// operator deletes the other side. The node recovers with the side it holds.
+func TestDeleteConflictingReferenceOnTheNodeThatKeepsTheOtherSide(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, dialect sqlstore.Dialect) {
+		for _, tc := range []struct{ kept, deleted string }{
+			{"refs/heads/a", "refs/heads/a/b"},
+			{"refs/heads/a/b", "refs/heads/a"},
+		} {
+			t.Run(tc.kept, func(t *testing.T) {
+				h := setup(t, corestore.ModeAuthoritative, dialect)
+				main := h.seed()
+				id := h.importRepo()
+				_, err := h.core.Meta.CommitChangeset(h.ctx, corestore.ChangesetInput{
+					RepoID:    id,
+					Updates:   []corestore.RefUpdate{{Name: tc.kept, Expect: corestore.ExpectValue, New: corestore.Target(main)}},
+					Operation: "test", Actor: "other-node", NodeID: "node-b",
+				})
+				require.NoError(t, err)
+				require.Empty(t, h.verify(false).GetDivergences())
+				require.Contains(t, h.localRefs(), tc.kept)
+
+				coretest.CommitRefWithoutNameCheck(t, h.ctx, h.core.Meta, id, tc.deleted, corestore.Target(main))
+				_, err = h.client.VerifyRepository(h.ctx, &gitalypb.VerifyRepositoryRequest{Repository: h.repo})
+				require.Equal(t, codes.FailedPrecondition, status.Code(err), "the node is stuck: %v", err)
+
+				_, err = h.client.DeleteConflictingReference(h.ctx, &gitalypb.DeleteConflictingReferenceRequest{
+					Repository: h.repo, Reference: []byte(tc.deleted), ExpectedTarget: main.String(),
+				})
+				require.NoError(t, err)
+
+				resp, err := h.client.VerifyRepository(h.ctx, &gitalypb.VerifyRepositoryRequest{Repository: h.repo})
+				require.NoError(t, err, "the node recovers after the repair")
+				require.Empty(t, resp.GetDivergences())
+				local := h.localRefs()
+				require.Contains(t, local, tc.kept)
+				require.NotContains(t, local, tc.deleted)
+			})
+		}
+	})
+}

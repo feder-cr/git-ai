@@ -1,11 +1,14 @@
 package syncer_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/feder-cr/git-ai/internal/git/gittest"
 	"github.com/feder-cr/git-ai/internal/graft/corestore"
+	"github.com/feder-cr/git-ai/internal/graft/corestore/coretest"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/gitops"
 	"github.com/feder-cr/git-ai/internal/graft/corestore/sqlstore"
 )
@@ -185,6 +188,69 @@ func TestSyncerCatchesUpOverRenamedDirectories(t *testing.T) {
 				}
 				require.NoError(t, node.sy.EnsureFresh(node.ctx, node.pbRepo(localRelPath)))
 				node.verifySynced(t, repo)
+			})
+		})
+	}
+}
+
+// TestSyncerCatchesUpOverAbsenceNextToLocalReference catches a node up over a range that creates
+// and deletes a name git cannot hold next to a reference the node has and the range does not touch:
+// the deleted side of a pair, after the operator's repair, on the node that holds the kept side.
+// git refuses the verification of that absence, so the local reference proves it instead, at the
+// value the check read: a local write that moves it meanwhile fails the transaction, and the check
+// runs again.
+func TestSyncerCatchesUpOverAbsenceNextToLocalReference(t *testing.T) {
+	for _, tc := range []struct{ kept, deleted string }{
+		{"refs/heads/a", "refs/heads/a/b"},
+		{"refs/heads/a/b", "refs/heads/a"},
+	} {
+		t.Run(tc.kept, func(t *testing.T) {
+			forEachDialect(t, func(t *testing.T, dialect sqlstore.Dialect) {
+				for _, localWrite := range []bool{false, true} {
+					writer := newEnv(t, envOptions{dialect: dialect})
+					node := writer.secondNode(t, dialect)
+					src := writer.newSource(t)
+					c1 := writer.writeCommit(t, src)
+					repo := writer.register(t, writer.key(localRelPath), src, c1)
+
+					writer.changeset(t, repo.ID, src, []corestore.RefUpdate{createRef(tc.kept, corestore.Target(c1))})
+					require.NoError(t, node.sy.EnsureFresh(node.ctx, node.pbRepo(localRelPath)))
+
+					// The pair an older version could write, then the repair.
+					coretest.CommitRefWithoutNameCheck(t, writer.ctx, writer.core.Meta, repo.ID, tc.deleted, corestore.Target(c1))
+					writer.changeset(t, repo.ID, src, []corestore.RefUpdate{
+						{Name: tc.deleted, Expect: corestore.ExpectValue, Old: corestore.Target(c1)},
+					})
+
+					if !localWrite {
+						require.NoError(t, node.sy.EnsureFresh(node.ctx, node.pbRepo(localRelPath)))
+						node.verifySynced(t, repo)
+						continue
+					}
+
+					// Between the check and the apply, a local write moves the reference that
+					// proves the absence: the transaction fails on it, and the check runs again.
+					c2 := gittest.WriteCommit(t, node.cfg, filepath.Join(node.storagePath, localRelPath), gittest.WithParents(c1))
+					checks := 0
+					node.sy.SetTestHook(func(point string) {
+						if point != "checked" {
+							return
+						}
+						checks++
+						if checks == 1 {
+							require.NoError(t, gitops.ApplyRefs(node.ctx, node.localRepo(), map[string]corestore.Target{
+								tc.kept: corestore.Target(c2),
+							}))
+						}
+					})
+					require.NoError(t, node.sy.EnsureFresh(node.ctx, node.pbRepo(localRelPath)))
+					require.Equal(t, 2, checks, "the moved proof fails the first transaction")
+					local, err := gitops.ReadRefs(node.ctx, node.localRepo())
+					require.NoError(t, err)
+					require.NotContains(t, local, tc.deleted)
+					// The range does not touch the kept side, so the catch-up leaves the local write.
+					require.Equal(t, corestore.Target(c2), local[tc.kept])
+				}
 			})
 		})
 	}

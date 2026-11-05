@@ -46,6 +46,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -1198,6 +1199,11 @@ func (s *Syncer) checkLocked(ctx context.Context, repo *localrepo.Repo, path str
 		}
 		moves[name] = move{old: current, new: h.final}
 	}
+
+	moves, err = withLocalAbsenceProofs(ctx, repo, moves)
+	if err != nil {
+		return checkOutcome{}, structerr.NewInternal("storage core: %w", err)
+	}
 	return checkOutcome{moves: moves}, nil
 }
 
@@ -1441,6 +1447,60 @@ func applyChecked(ctx context.Context, repo *localrepo.Repo, w refWriter, hash g
 		return fmt.Errorf("apply removals: %w", err)
 	}
 	return refTransaction(ctx, repo, w, others)
+}
+
+// withLocalAbsenceProofs returns moves, or a copy of it in which the verification of an absent
+// name that conflicts with a local reference outside moves is replaced by the verification of that
+// local reference at its current value.
+//
+// A name is verified absent when the range creates and deletes it, and the database at the end of
+// the range confirms it absent (the move's new value). git refuses that verification while a local
+// reference exists that it could not hold next to the name (refs/a next to a verification of
+// refs/a/b), as for a creation, so such a catch-up would fail on every attempt. That is the usual
+// state after the operator deleted one side of a pair that two nodes each held one side of: the
+// node that holds the kept side catches up over the deleted side, created and deleted. Names the
+// range itself conflicts with are left to withoutImpliedAbsences.
+//
+// The local reference proves the absence: git cannot hold both names, so while it exists the name
+// does not. Verifying it at the value read keeps the compare-and-swap: a local write that moved it
+// since, which a write of the name would need, fails the transaction, and the check runs again. A
+// database that holds both names at the end of the range is not touched by this: the name is then
+// created, not verified, and git still refuses it.
+func withLocalAbsenceProofs(ctx context.Context, repo *localrepo.Repo, moves map[string]move) (map[string]move, error) {
+	var absent []string
+	for name, m := range moves {
+		if name != "HEAD" && m.verify() && m.old.Absent() {
+			absent = append(absent, name)
+		}
+	}
+	if len(absent) == 0 {
+		return moves, nil
+	}
+
+	conflicts, err := gitops.LocalNameConflicts(ctx, repo, absent)
+	if err != nil {
+		return nil, fmt.Errorf("read the local references next to names verified absent: %w", err)
+	}
+
+	var proved map[string]move
+	for _, name := range absent {
+		local, ok := conflicts[name]
+		if !ok {
+			continue
+		}
+		if _, inRange := moves[local.Name]; inRange {
+			continue
+		}
+		if proved == nil {
+			proved = maps.Clone(moves)
+		}
+		delete(proved, name)
+		proved[local.Name] = move{old: local.Target, new: local.Target}
+	}
+	if proved == nil {
+		return moves, nil
+	}
+	return proved, nil
 }
 
 // withoutImpliedAbsences returns the sorted names without the verifications of
