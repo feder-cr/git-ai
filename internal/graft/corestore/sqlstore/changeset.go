@@ -340,6 +340,23 @@ func (s *Store) conflictingRef(ctx context.Context, q querier, repoID int64, nam
 	return s.firstRefBelow(ctx, q, repoID, name)
 }
 
+// ConflictingRef implements corestore.MetaStore.
+func (s *Store) ConflictingRef(ctx context.Context, repoID int64, name string) (string, bool, error) {
+	var (
+		existing string
+		found    bool
+	)
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		existing, found, err = s.conflictingRef(ctx, tx, repoID, name)
+		return err
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return existing, found, nil
+}
+
 // refuseRepairOfApplicableRefs returns corestore.ErrRefNotConflicting unless
 // every reference of names exists in current and conflicts by name with another
 // reference of the repository (ChangesetInput.OnlyConflictingNames). It reads

@@ -595,30 +595,52 @@ or re-import the repository from scratch (see
   `graft_storage_shadow_errors_total`.
 - **Two nodes create conflicting names.** git cannot hold `refs/heads/a` and
   `refs/heads/a/b` together, and each node's git only sees its own copy. The
-  database refuses a changeset that creates a name in such a conflict with a
-  reference it holds, as git refuses one locally, so the repository stays
-  something every node can apply. What the client sees:
+  database refuses, in its commit, a changeset that would leave such a pair
+  (also forced, so also in shadow mode), so the repository stays something
+  every node can apply. A database that holds a pair already is repaired as
+  the next item says. What a client sees, in shadow and authoritative mode:
+  - **A push** (SSH or smart HTTP, with or without `--atomic`): the update
+    hook, which git runs for each reference before its transaction, refuses a
+    new reference that conflicts with a reference of the database. The client
+    gets `remote: refusing refs/heads/a/b: git cannot hold it next to
+    refs/heads/a; push the other references without it` and `! [remote
+    rejected] refs/heads/a/b (hook declined)` where a plain git server says
+    `(refname conflict)`. Without `--atomic` the other references of the push
+    land as usual. A name the pusher may not see is not named: an agent reads
+    `a reference hidden from you` instead (in practice receive-pack already
+    refuses such names with `deny updating a hidden ref`).
+  - **A push that creates both names of a pair**, such as `refs/heads/a` and
+    `refs/heads/a/b` in one push without `--atomic`, is refused as a whole in
+    authoritative mode. The update hook cannot see the conflict, since each
+    name conflicts only with the other. git refuses one of the two names, but
+    still hands both to the reference-transaction hook (a known git behaviour
+    this release does not work around), and the database refuses that
+    changeset. receive-pack then dies: nothing of the push lands. Over SSH the
+    client sees the `refusing ...` line as a plain line, and `fatal: in
+    'prepared' phase, update aborted by the reference-transaction hook`. Over
+    smart HTTP git sends the output of that hook to no client, so the client
+    only sees `fatal: the remote end hung up unexpectedly`. Push the names
+    separately; one of them git cannot hold in any case. The same happens when
+    another node commits the conflicting name between this push's update hook
+    and its commit. In shadow mode the push behaves as on a plain git server,
+    but the database records none of its references: `graft storage verify`
+    reports the one git wrote, and its next write records it.
   - Where the server drives the reference transaction, the code of git's own
     refusal: `FailedPrecondition` from `UserCreateBranch` and `UserCommitFiles`,
-    for example.
-  - Where a git process runs the hook, a hook failure, as for any other refusal
-    of the database: `Internal` from `UpdateReferences`.
-  - **A push fails as a whole, also without `--atomic`.** receive-pack exits
-    with `fatal: in 'prepared' phase, update aborted by the reference-transaction
-    hook` and the client sees the remote hang up, with no status line per
-    reference. None of the references of that push land, also those that
-    conflict with nothing; a plain git server would refuse only the conflicting
-    one, with `! [remote rejected] (refname conflict)`. Push the others again.
-    This also happens when the conflict is with the pushing node's own copy:
-    git refuses the update there, but still hands it to the reference-transaction
-    hook with the others (see the push of a branch another client just created,
-    below), and the database refuses the changeset that holds it.
-  A shadow write is not recorded and proceeds: it counts in
+    for example. Through a git process that the server runs without a push,
+    `Internal` (`UpdateReferences`), as for git's own such conflict.
+  A shadow write the database refuses proceeds unrecorded: it counts in
   `graft_storage_shadow_errors_total`, and verification reports the difference.
-  Cost: an update or deletion of an existing reference costs nothing more; each
-  created reference costs one primary key range probe of at most one row, and
-  the parent names of the created references one primary key lookup per 500
-  names.
+  A shadow write is never refused for a failed read of the database either: the
+  update hook logs it, counts it as a shadow error and lets git proceed. In
+  authoritative mode such a read failure refuses the reference with
+  `Unavailable`, as any write needs the database.
+  Cost: an update or deletion of an existing reference reads nothing more. The
+  commit of each created reference adds one primary key range probe of at most
+  one row, and the parent names of the created references one primary key
+  lookup per 500 names. A push's update hook adds, per created reference, a
+  read of the repository's row, one primary key lookup of its parent names and
+  one range probe, in a read transaction of its own.
 - **A repository removed on another node.** The local copy has a watermark
   whose key the database no longer has; it is moved into the storage's
   temporary directory, and the repository is reported missing on that node too.

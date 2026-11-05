@@ -1,6 +1,10 @@
 package conformance
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/feder-cr/git-ai/internal/graft/corestore"
+)
 
 // An allowedDifference is a difference from stock git that is meant to be there. The diffs are the
 // exact text of differences(), so a new difference, or one that went away, fails the row.
@@ -8,6 +12,8 @@ type allowedDifference struct {
 	row string
 	// protocols selects the wire protocol versions it applies to; nil means every version.
 	protocols []int
+	// modes selects the gitai modes it applies to; nil means every mode.
+	modes func(gitaiMode) bool
 	// reason says why gitai differs on purpose.
 	reason string
 	diffs  []string
@@ -75,17 +81,77 @@ var allowedDifferences = []allowedDifference{
 			`step 02 git clone --quiet --filter=blob:none <url> c: exit: stock "128", gitai "0"`,
 		},
 	},
+
+	// The storage core refuses, in the update hook, a reference that git cannot hold next to one the
+	// database holds. receive-pack reports it as a hook's refusal, with the reason on a remote: line,
+	// where stock git reports its own refusal of the name; the other references of the push are
+	// handled as in stock git.
+	refNameHookDecline("conflict: a branch below a branch", "step 03 git push --porcelain origin main:refs/heads/a/b: refs/heads/a/b", "refname conflict"),
+	refNameHookDecline("conflict: a branch above a branch", "step 03 git push --porcelain origin main:refs/heads/a: refs/heads/a", "refname conflict"),
+	refNameHookDecline("push non-atomic, one refused by the server",
+		"step 02 git push --porcelain origin main:refs/heads/one main:refs/heads/side/below: refs/heads/side/below", "refname conflict"),
+	// With --atomic, git refuses the whole push in both; it names another reason for each reference.
+	refNameHookDecline("push atomic, one refused by the server",
+		"step 02 git push --porcelain origin --atomic main:refs/heads/one main:refs/heads/side/below: refs/heads/side/below", "atomic transaction failed",
+		`step 02 git push --porcelain origin --atomic main:refs/heads/one main:refs/heads/side/below: refs/heads/one: stock "! [remote rejected] (atomic transaction failed)", gitai "! [remote rejected] (atomic push failure)"`),
+	// The update hook runs before the deletion of the same atomic push: it refuses refs/heads/a/b
+	// while the database holds refs/heads/a. Stock git refuses the push too, as git does not resolve
+	// a file/directory conflict inside one transaction.
+	refNameHookDecline("conflict resolved by a delete in the same atomic push",
+		"step 03 git push --porcelain origin --atomic :refs/heads/a main:refs/heads/a/b: refs/heads/a/b", "atomic transaction failed",
+		`step 03 git push --porcelain origin --atomic :refs/heads/a main:refs/heads/a/b: refs/heads/a: stock "! [remote rejected] (atomic transaction failed)", gitai "! [remote rejected] (atomic push failure)"`),
+
+	// Both names are new in one push, so the update hook cannot see the conflict; git refuses one of
+	// them, but still hands both to the reference-transaction hook (bugRejectedUpdateCommitted). The
+	// database refuses that changeset, which fails the whole push in its prepared phase. This entry
+	// goes away with the bug.
+	{
+		row:    "conflict inside one push",
+		modes:  func(mode gitaiMode) bool { return mode.coreMode == corestore.ModeAuthoritative },
+		reason: bugRejectedUpdateCommitted + ": the database refuses the changeset that holds the rejected update, so receive-pack dies and nothing of the push lands",
+		diffs: []string{
+			`server ref refs/heads/a/b: stock "<oid>", gitai "<absent>"`,
+			`step 02 git push --porcelain origin main:refs/heads/a main:refs/heads/a/b: exit: stock "1", gitai "128"`,
+			`step 02 git push --porcelain origin main:refs/heads/a main:refs/heads/a/b: refs/heads/a/b: stock "* [new branch]", gitai "<absent>"`,
+			`step 02 git push --porcelain origin main:refs/heads/a main:refs/heads/a/b: refs/heads/a: stock "! [remote rejected] (refname conflict)", gitai "<absent>"`,
+			`step 02 git push --porcelain origin main:refs/heads/a main:refs/heads/a/b: says : stock "<absent>", gitai "yes"`,
+			`step 02 git push --porcelain origin main:refs/heads/a main:refs/heads/a/b: says Done: stock "yes", gitai "<absent>"`,
+			`step 02 git push --porcelain origin main:refs/heads/a main:refs/heads/a/b: says To <url>: stock "yes", gitai "<absent>"`,
+			`step 03 git ls-remote --symref <url>: refs/heads/a/b: stock "<oid>", gitai "<absent>"`,
+		},
+	},
 }
 
-// allowedFor returns the differences the row may have with the protocol, sorted as differences()
-// sorts them.
-func allowedFor(row string, protocol int) []string {
+// reasonRefNameHookDecline is why the update hook refuses a name git cannot hold next to a reference
+// of the storage core's database (doc/graft/STORAGE.md, Failures).
+const reasonRefNameHookDecline = "the storage core's database holds every node's references, and the update hook refuses a name git cannot hold next to one of them, so that no node is left with a pair it cannot apply"
+
+// refNameHookDecline is the difference of a push whose reference the update hook declines for the
+// storage core, in the modes with a storage core: line is the step and reference of its status, and
+// stockReason the reason stock git gives.
+func refNameHookDecline(row, line, stockReason string, more ...string) allowedDifference {
+	return allowedDifference{
+		row:    row,
+		modes:  withStorageCore,
+		reason: reasonRefNameHookDecline,
+		diffs: append([]string{
+			line + `: stock "! [remote rejected] (` + stockReason + `)", gitai "! [remote rejected] (hook declined)"`,
+		}, more...),
+	}
+}
+
+// allowedFor returns the differences the row may have with the protocol in mode, sorted as
+// differences() sorts them.
+func allowedFor(row string, mode gitaiMode, protocol int) []string {
 	allowed := []string{}
 	for _, entry := range allowedDifferences {
 		if entry.row != row {
 			continue
 		}
 		if entry.protocols != nil && !containsInt(entry.protocols, protocol) {
+			continue
+		}
+		if entry.modes != nil && !entry.modes(mode) {
 			continue
 		}
 		allowed = append(allowed, entry.diffs...)
@@ -117,22 +183,23 @@ type knownProblem struct {
 func withStorageCore(mode gitaiMode) bool { return mode.coreMode != "" }
 
 // bugRejectedUpdateCommitted: git's reference-transaction hook is fed the updates that a non-atomic
-// receive-pack (REF_TRANSACTION_ALLOW_FAILURE) already rejected, so the voter commits a rejected update
-// to the database. The client is told that the reference was refused; the database holds it. With a
-// directory/file conflict the database then holds refs/heads/a and refs/heads/a/b, which no git
-// repository can hold: the local copy diverges for good, and a node without a copy fails to hydrate
-// the repository with "conflicting reference updates in the same transaction".
-const bugRejectedUpdateCommitted = "a rejected update of a non-atomic push is committed to the database"
+// receive-pack (REF_TRANSACTION_ALLOW_FAILURE) already rejected. The update hook keeps a name that
+// conflicts with a reference of the database out of the transaction, and the database refuses a
+// changeset that would leave a pair git cannot hold, so the database never records such a rejected
+// update. What is left is a push that creates both names of a pair: the update hook cannot see that,
+// git rejects one name, and the database refuses the changeset that still holds both. Authoritative
+// mode then fails the whole push (an allowed difference above); shadow mode lets git's write proceed
+// and records none of it, so the database misses the name git did write.
+const bugRejectedUpdateCommitted = "a rejected update of a non-atomic push reaches the reference-transaction hook"
 
-func divergedAt(reference string) []string {
-	return []string{`the database diverges at ` + reference + `: local "", database "<oid>"`}
+func missingAt(reference string) []string {
+	return []string{`the database diverges at ` + reference + `: local "<oid>", database ""`}
 }
 
+func withShadowCore(mode gitaiMode) bool { return mode.coreMode == corestore.ModeShadow }
+
 var knownProblems = []knownProblem{
-	{"conflict: a branch below a branch", withStorageCore, bugRejectedUpdateCommitted, divergedAt("refs/heads/a/b")},
-	{"conflict: a branch above a branch", withStorageCore, bugRejectedUpdateCommitted, divergedAt("refs/heads/a")},
-	{"conflict inside one push", withStorageCore, bugRejectedUpdateCommitted, divergedAt("refs/heads/a")},
-	{"push non-atomic, one refused by the server", withStorageCore, bugRejectedUpdateCommitted, divergedAt("refs/heads/side/below")},
+	{"conflict inside one push", withShadowCore, bugRejectedUpdateCommitted, missingAt("refs/heads/a/b")},
 }
 
 // knownProblemsFor returns the problems the row may have in mode.

@@ -154,6 +154,13 @@ type MetaStore interface {
 	// and creations, is refused with *ErrRefNameConflict, writing nothing, also
 	// when Force is set: the database must stay something git can apply.
 	CommitChangeset(ctx context.Context, in ChangesetInput) (CommitResult, error)
+	// ConflictingRef returns a reference of the repository that git cannot hold
+	// next to a reference named name (a parent directory of name that is a
+	// reference, or a reference below name), and whether there is one; name
+	// itself does not count. It reads the committed state, outside any commit, so
+	// a commit may change the answer right after: CommitChangeset decides. It
+	// costs one primary key lookup and one primary key range probe.
+	ConflictingRef(ctx context.Context, repoID int64, name string) (string, bool, error)
 	// ListChangesets returns the changesets with after < seq <= upTo in
 	// ascending order, with their updates.
 	ListChangesets(ctx context.Context, repoID int64, after, upTo uint64) ([]Changeset, error)

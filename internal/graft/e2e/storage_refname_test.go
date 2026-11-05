@@ -156,8 +156,10 @@ func TestStorageConflictingNameFailsTheWholePush(t *testing.T) {
 			require.NoError(t, winnerErr)
 			require.False(t, ok, "the push fails: %s", out)
 			// receive-pack itself dies, as for any refusal of the database: the client gets
-			// no status line per reference.
+			// no status line per reference. git gives the reference-transaction hook no side
+			// band, so the reason reaches an SSH client as a plain line.
 			require.Contains(t, out, "fatal: in 'prepared' phase, update aborted by the reference-transaction hook")
+			require.Regexp(t, `(?m)^refusing refs/heads/race/child: git cannot hold it next to refs/heads/race; push the other references without it$`, out)
 			require.NotContains(t, out, "[new branch]")
 			refs := a.dbRefs(t, rel)
 			require.Contains(t, refs, "refs/heads/race")

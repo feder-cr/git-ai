@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/feder-cr/git-ai/internal/git/updateref"
 	"github.com/feder-cr/git-ai/internal/gitaly/hook"
 	"github.com/feder-cr/git-ai/internal/gitaly/storage"
 	"github.com/feder-cr/git-ai/internal/gitaly/transaction"
@@ -51,6 +52,24 @@ func (s *server) ReferenceTransactionHook(stream gitalypb.HookService_ReferenceT
 		request.GetEnvironmentVariables(),
 		stdin,
 	); err != nil {
+		// The storage core refused a reference git cannot hold next to another one, after
+		// git's transaction began, so git refuses the whole transaction. git gives this hook
+		// no side band: on SSH its stderr reaches the client as is, over HTTP it does not.
+		var nameConflict updateref.FileDirectoryConflictError
+		if errors.As(err, &nameConflict) {
+			if err := stream.Send(&gitalypb.ReferenceTransactionHookResponse{
+				Stderr: []byte(hook.RefNameConflictMessage(nameConflict) + "\n"),
+			}); err != nil {
+				return structerr.NewInternal("sending response: %w", err)
+			}
+			if err := stream.Send(&gitalypb.ReferenceTransactionHookResponse{
+				ExitStatus: &gitalypb.ExitStatus{Value: 1},
+			}); err != nil {
+				return structerr.NewInternal("sending response: %w", err)
+			}
+			return nil
+		}
+
 		switch {
 		case errors.Is(err, transaction.ErrTransactionAborted):
 			return structerr.NewAborted("reference-transaction hook: %w", err)

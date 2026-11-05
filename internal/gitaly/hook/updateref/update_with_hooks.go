@@ -295,6 +295,17 @@ func (u *UpdaterWithHooks) UpdateReference(
 	}
 
 	if err := u.hookManager.UpdateHook(ctx, quarantinedRepo, written.String(), oldrev.String(), newrev.String(), []string{hooksPayload}, &stdout, &stderr); err != nil {
+		// The storage core refused the name in the update hook, before the transaction: the
+		// same refusal as in the prepared phase below.
+		var fileDirectoryErr updateref.FileDirectoryConflictError
+		if errors.As(err, &fileDirectoryErr) {
+			return Error{
+				Reference: reference,
+				OldOID:    oldrev,
+				NewOID:    newrev,
+				Cause:     err,
+			}
+		}
 		return fmt.Errorf("running update hooks: %w", wrapHookError(err, gitcmd.UpdateHook, stdout.String(), stderr.String()))
 	}
 

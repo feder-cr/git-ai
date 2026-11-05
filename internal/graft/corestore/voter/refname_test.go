@@ -1,10 +1,13 @@
 package voter_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/feder-cr/git-ai/internal/git/updateref"
 	"github.com/feder-cr/git-ai/internal/graft/corestore"
@@ -50,6 +53,62 @@ func TestPreparedFileDirectoryConflictWithTheDatabase(t *testing.T) {
 					require.Equal(t, float64(1), metricValue(t, f.voter, "graft_storage_shadow_errors_total", nil))
 					require.Equal(t, float64(1), metricValue(t, f.voter, "graft_storage_changesets_total", map[string]string{"mode": "shadow", "result": "conflict"}))
 				})
+			})
+		}
+	})
+}
+
+// failingConflictRead is a database whose read of conflicting names fails.
+type failingConflictRead struct{ corestore.MetaStore }
+
+func (failingConflictRead) ConflictingRef(context.Context, int64, string) (string, bool, error) {
+	return "", false, errors.New("the database is gone")
+}
+
+// TestCreatedRefConflict covers the check of the update hook: the name the database holds, in
+// both directions; nothing for a repository the database does not track or whose import is not
+// complete; and a failed read, which refuses in authoritative mode only.
+func TestCreatedRefConflict(t *testing.T) {
+	forEachDialect(t, func(t *testing.T, dialect sqlstore.Dialect) {
+		for _, mode := range []corestore.Mode{corestore.ModeAuthoritative, corestore.ModeShadow} {
+			t.Run(string(mode), func(t *testing.T) {
+				f := newFixture(t, fixtureOptions{mode: mode, dialect: dialect})
+				f.seed(t, "refs/heads/a", corestore.Target(f.b.String()))
+				f.seed(t, "refs/heads/x/y", corestore.Target(f.b.String()))
+
+				for ref, want := range map[string]string{
+					"refs/heads/a/b":   "refs/heads/a",
+					"refs/heads/a/b/c": "refs/heads/a",
+					"refs/heads/x":     "refs/heads/x/y",
+					"refs/heads/ab":    "",
+					"refs/heads/x/z":   "",
+					"refs/heads/a":     "",
+				} {
+					got, err := f.voter.CreatedRefConflict(f.ctx, f.repo, ref)
+					require.NoError(t, err)
+					require.Equal(t, want, got, ref)
+				}
+
+				f.core.Meta = failingConflictRead{f.core.Meta}
+				_, err := f.voter.CreatedRefConflict(f.ctx, f.repo, "refs/heads/a/b")
+				if mode == corestore.ModeAuthoritative {
+					require.Equal(t, codes.Unavailable, status.Code(err), "error: %v", err)
+					return
+				}
+				require.NoError(t, err, "shadow mode never refuses a git write")
+				require.Equal(t, float64(1), metricValue(t, f.voter, "graft_storage_shadow_errors_total", nil))
+			})
+		}
+
+		for desc, opts := range map[string]fixtureOptions{
+			"untracked":  {mode: corestore.ModeShadow, dialect: dialect, untracked: true},
+			"incomplete": {mode: corestore.ModeAuthoritative, dialect: dialect, incomplete: true},
+		} {
+			t.Run(desc, func(t *testing.T) {
+				f := newFixture(t, opts)
+				got, err := f.voter.CreatedRefConflict(f.ctx, f.repo, "refs/heads/a/b")
+				require.NoError(t, err)
+				require.Empty(t, got)
 			})
 		}
 	})

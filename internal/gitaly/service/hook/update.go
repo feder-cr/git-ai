@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/feder-cr/git-ai/internal/git/updateref"
 	"github.com/feder-cr/git-ai/internal/gitaly/storage"
 	"github.com/feder-cr/git-ai/internal/structerr"
 	"github.com/feder-cr/git-ai/proto/go/gitalypb"
@@ -42,6 +43,12 @@ func (s *server) UpdateHook(in *gitalypb.UpdateHookRequest, stream gitalypb.Hook
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
 			return updateHookResponse(stream, int32(exitError.ExitCode()))
+		}
+		// The storage core refused the name and told the client why on stderr: the hook
+		// declines the reference, as a custom hook that exits with an error does.
+		var nameConflict updateref.FileDirectoryConflictError
+		if errors.As(err, &nameConflict) {
+			return updateHookResponse(stream, 1)
 		}
 
 		return structerr.NewInternal("%w", err)

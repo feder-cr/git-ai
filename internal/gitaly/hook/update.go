@@ -68,6 +68,12 @@ func (m *GitLabHookManager) updateHook(ctx context.Context, payload gitcmd.Hooks
 		}
 	}
 
+	// The same holds for a name the storage core's database cannot record next to another one.
+	created := objectHash.IsZeroOID(git.ObjectID(oldValue)) && !objectHash.IsZeroOID(git.ObjectID(newValue))
+	if err := m.checkCreatedRefName(ctx, payload, env, ref, created, stderr); err != nil {
+		return err
+	}
+
 	executor, err := m.newCustomHooksExecutor(ctx, repo, "update")
 	if err != nil {
 		return structerr.NewInternal("%w", err)
