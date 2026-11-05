@@ -137,8 +137,8 @@ const (
 	maxLoggedArgsElements = 100
 	// defaultTerminationGrace is how long the process group of a command whose context is done has
 	// to end after SIGTERM, before it gets SIGKILL. git takes milliseconds to remove its locks, and
-	// SIGKILL leaves them behind, so this only has to be long for a machine under load. It is what
-	// a caller of a cancelled command can wait at most for a group that ignores SIGTERM.
+	// SIGKILL leaves them behind, so this only has to be long for a machine under load. It is how
+	// long a caller of a cancelled command waits for a group that ignores SIGTERM.
 	defaultTerminationGrace = 10 * time.Second
 )
 
@@ -451,6 +451,7 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting process %v: %w", cmd.Args, err)
 	}
+	group := newProcGroup(cmd.Process.Pid)
 	startStdinCopy()
 
 	go trackMaxRssAnon(ctx, cmd.Process.Pid, &command.maxRssAnon, command.processExitedCh)
@@ -480,13 +481,23 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 			// the child process then we need to manually kill it and release
 			// all associated resources.
 			if cmd.Process.Pid > 0 {
+				// Before the signal, while the leader cannot have been reaped because of it.
+				proof := group.proof()
+
 				//nolint:errcheck // TODO: do we want to report errors?
 				// Send SIGTERM to the process group of cmd
 				syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 
-				// SIGTERM lets git remove its locks, but a process may ignore it (a custom
-				// hook that traps it, and the git waiting for that hook), and Wait below has
-				// to end: every caller of the command waits on it.
+				// SIGTERM lets git remove its locks, but a process may ignore it (a custom hook
+				// that traps it, and the git waiting for that hook). While Wait below is blocked,
+				// a group that outlives the grace period gets SIGKILL, if its number is provably
+				// still its own: exec.Cmd.Wait reaps the leader before it waits for its copy
+				// goroutines, so the group may be gone and its number reused by then.
+				//
+				// This bounds a group that ignores SIGTERM, not Wait: a copy goroutine can stay
+				// blocked on the caller's reader or writer, or on a stream held by a process that
+				// left the group. And a member that ignores SIGTERM and holds no stream is not
+				// killed once Wait has returned.
 				escalation := time.AfterFunc(terminationGrace, func() {
 					select {
 					case <-command.processExitedCh:
@@ -494,9 +505,20 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 					default:
 					}
 
-					logger.WithField("pid", cmd.Process.Pid).WarnContext(ctx, "process group outlived SIGTERM, sending SIGKILL")
-					//nolint:errcheck // The group may be gone by now, which is what we want.
-					syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+					if cfg.beforeEscalation != nil {
+						cfg.beforeEscalation()
+					}
+
+					signalled := proof.stillOurs()
+					if signalled {
+						logger.WithField("pid", cmd.Process.Pid).WarnContext(ctx, "process group outlived SIGTERM, sending SIGKILL")
+						//nolint:errcheck // The group may be gone by now, which is what we want.
+						syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+					}
+
+					if cfg.afterEscalation != nil {
+						cfg.afterEscalation(signalled)
+					}
 				})
 				defer escalation.Stop()
 			}
@@ -609,6 +631,11 @@ func (c *Command) Stdin() io.WriteCloser {
 //
 // Wait returns a wrapped context error if the process was reaped due to
 // the context being done.
+//
+// A process that handles the SIGTERM of a done context and exits with
+// status 0 makes Wait return nil: it succeeded, for all Wait can tell. A
+// caller that must not take a cancelled command for a finished one checks
+// its context.
 func (c *Command) Wait() error {
 	c.waitOnce.Do(c.wait)
 

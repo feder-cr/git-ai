@@ -34,6 +34,10 @@ type config struct {
 	completionErrorLogFilter func(*Command, string) bool
 	// terminationGrace replaces defaultTerminationGrace when set; only tests set it.
 	terminationGrace time.Duration
+	// beforeEscalation is called when the grace period has passed, before it is decided whether the
+	// group gets SIGKILL; afterEscalation is called with the decision. Only tests set them.
+	beforeEscalation func()
+	afterEscalation  func(signalled bool)
 }
 
 // Option is an option that can be passed to `New()` for controlling how the command is being
