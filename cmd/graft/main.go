@@ -274,7 +274,7 @@ commands:
   cat REV:PATH           print a file at a revision
   search QUERY           search file contents (--regex, -i, --path, --context, -n, --rev, --json)
   review SUBCOMMAND      create, show, list, comment, approve, request-changes, update, close (--branch, --title, --json)
-  storage SUBCOMMAND     import, state, verify, checkpoint, gc a repository in the storage core; gc --removed for a storage (--connectivity, --dry-run, --json)
+  storage SUBCOMMAND     import, state, verify, checkpoint, gc, delete-conflicting-ref a repository in the storage core; gc --removed for a storage (--connectivity, --dry-run, --json)
   repo create REPO       create a repository, with the shared token (--default-branch, --object-format,
                          --initial-commit [--branch NAME], --json)
   policy check FILE      validate the access policy of a configuration file before a reload, and list

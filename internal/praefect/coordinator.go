@@ -115,6 +115,9 @@ var transactionRPCs = map[string]transactionsCondition{
 	// behind Praefect); CollectGarbage deletes bucket objects and rows (also in shadow mode).
 	"/gitaly.StorageCoreService/CreateCheckpoint": transactionsDisabled,
 	"/gitaly.StorageCoreService/CollectGarbage":   transactionsDisabled,
+	// DeleteConflictingReference writes a changeset to the database (authoritative mode only,
+	// which is refused behind Praefect).
+	"/gitaly.StorageCoreService/DeleteConflictingReference": transactionsDisabled,
 }
 
 // forcePrimaryRoutingRPCs tracks RPCs which need to always get routed to the primary. This should

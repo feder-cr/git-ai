@@ -230,6 +230,7 @@ func (s *server) ImportRepository(ctx context.Context, req *gitalypb.ImportRepos
 	})
 	if err != nil {
 		var conflict *corestore.ErrRefConflict
+		var nameConflict *corestore.ErrRefNameConflict
 		switch {
 		case errors.As(err, &conflict):
 			// Writes are refused (authoritative) or not recorded (shadow) while the
@@ -238,6 +239,9 @@ func (s *server) ImportRepository(ctx context.Context, req *gitalypb.ImportRepos
 			return nil, errAlreadyImported()
 		case errors.Is(err, corestore.ErrRepositoryNotFound):
 			return nil, errRegistrationRemoved()
+		case errors.As(err, &nameConflict):
+			// Local git cannot normally hold such a pair, but a retry cannot fix one.
+			return nil, structerr.NewFailedPrecondition("storage core: %w", err)
 		default:
 			return nil, structerr.NewUnavailable("storage core: commit import changeset: %w; %s", err, resumeHint)
 		}

@@ -25,6 +25,7 @@ const (
 	StorageCoreService_CreateCheckpoint_FullMethodName           = "/gitaly.StorageCoreService/CreateCheckpoint"
 	StorageCoreService_CollectGarbage_FullMethodName             = "/gitaly.StorageCoreService/CollectGarbage"
 	StorageCoreService_CollectRemovedRepositories_FullMethodName = "/gitaly.StorageCoreService/CollectRemovedRepositories"
+	StorageCoreService_DeleteConflictingReference_FullMethodName = "/gitaly.StorageCoreService/DeleteConflictingReference"
 )
 
 // StorageCoreServiceClient is the client API for StorageCoreService service.
@@ -72,6 +73,15 @@ type StorageCoreServiceClient interface {
 	// gets a tombstone. It fails with FailedPrecondition when the storage core
 	// is off.
 	CollectRemovedRepositories(ctx context.Context, in *CollectRemovedRepositoriesRequest, opts ...grpc.CallOption) (*CollectRemovedRepositoriesResponse, error)
+	// DeleteConflictingReference deletes one reference of a pair that git cannot
+	// hold together (refs/heads/a and refs/heads/a/b), which a database written by
+	// an older version can contain: no node can apply such a pair, so the
+	// repository fails on every node until one side is gone. The operator chooses
+	// the side; nothing deletes a reference of such a pair by itself. It records
+	// an ordinary changeset, which the nodes apply when they catch up. It fails
+	// with FailedPrecondition outside authoritative mode, when the reference is
+	// not part of such a pair, or when it is not at expected_target.
+	DeleteConflictingReference(ctx context.Context, in *DeleteConflictingReferenceRequest, opts ...grpc.CallOption) (*DeleteConflictingReferenceResponse, error)
 }
 
 type storageCoreServiceClient struct {
@@ -142,6 +152,16 @@ func (c *storageCoreServiceClient) CollectRemovedRepositories(ctx context.Contex
 	return out, nil
 }
 
+func (c *storageCoreServiceClient) DeleteConflictingReference(ctx context.Context, in *DeleteConflictingReferenceRequest, opts ...grpc.CallOption) (*DeleteConflictingReferenceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteConflictingReferenceResponse)
+	err := c.cc.Invoke(ctx, StorageCoreService_DeleteConflictingReference_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // StorageCoreServiceServer is the server API for StorageCoreService service.
 // All implementations must embed UnimplementedStorageCoreServiceServer
 // for forward compatibility.
@@ -187,6 +207,15 @@ type StorageCoreServiceServer interface {
 	// gets a tombstone. It fails with FailedPrecondition when the storage core
 	// is off.
 	CollectRemovedRepositories(context.Context, *CollectRemovedRepositoriesRequest) (*CollectRemovedRepositoriesResponse, error)
+	// DeleteConflictingReference deletes one reference of a pair that git cannot
+	// hold together (refs/heads/a and refs/heads/a/b), which a database written by
+	// an older version can contain: no node can apply such a pair, so the
+	// repository fails on every node until one side is gone. The operator chooses
+	// the side; nothing deletes a reference of such a pair by itself. It records
+	// an ordinary changeset, which the nodes apply when they catch up. It fails
+	// with FailedPrecondition outside authoritative mode, when the reference is
+	// not part of such a pair, or when it is not at expected_target.
+	DeleteConflictingReference(context.Context, *DeleteConflictingReferenceRequest) (*DeleteConflictingReferenceResponse, error)
 	mustEmbedUnimplementedStorageCoreServiceServer()
 }
 
@@ -214,6 +243,9 @@ func (UnimplementedStorageCoreServiceServer) CollectGarbage(context.Context, *Co
 }
 func (UnimplementedStorageCoreServiceServer) CollectRemovedRepositories(context.Context, *CollectRemovedRepositoriesRequest) (*CollectRemovedRepositoriesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CollectRemovedRepositories not implemented")
+}
+func (UnimplementedStorageCoreServiceServer) DeleteConflictingReference(context.Context, *DeleteConflictingReferenceRequest) (*DeleteConflictingReferenceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteConflictingReference not implemented")
 }
 func (UnimplementedStorageCoreServiceServer) mustEmbedUnimplementedStorageCoreServiceServer() {}
 func (UnimplementedStorageCoreServiceServer) testEmbeddedByValue()                            {}
@@ -344,6 +376,24 @@ func _StorageCoreService_CollectRemovedRepositories_Handler(srv interface{}, ctx
 	return interceptor(ctx, in, info, handler)
 }
 
+func _StorageCoreService_DeleteConflictingReference_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteConflictingReferenceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageCoreServiceServer).DeleteConflictingReference(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StorageCoreService_DeleteConflictingReference_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageCoreServiceServer).DeleteConflictingReference(ctx, req.(*DeleteConflictingReferenceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // StorageCoreService_ServiceDesc is the grpc.ServiceDesc for StorageCoreService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -374,6 +424,10 @@ var StorageCoreService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CollectRemovedRepositories",
 			Handler:    _StorageCoreService_CollectRemovedRepositories_Handler,
+		},
+		{
+			MethodName: "DeleteConflictingReference",
+			Handler:    _StorageCoreService_DeleteConflictingReference_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -21,6 +21,118 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// DeleteConflictingReferenceRequest is the request of DeleteConflictingReference.
+type DeleteConflictingReferenceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// repository is the repository that holds the pair.
+	Repository *Repository `protobuf:"bytes,1,opt,name=repository,proto3" json:"repository,omitempty"`
+	// reference is the fully qualified name of the reference to delete.
+	Reference []byte `protobuf:"bytes,2,opt,name=reference,proto3" json:"reference,omitempty"`
+	// expected_target is the database value the reference must have: a hex object
+	// ID, or "ref:<name>" for a symbolic reference.
+	ExpectedTarget string `protobuf:"bytes,3,opt,name=expected_target,json=expectedTarget,proto3" json:"expected_target,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeleteConflictingReferenceRequest) Reset() {
+	*x = DeleteConflictingReferenceRequest{}
+	mi := &file_storage_core_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteConflictingReferenceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteConflictingReferenceRequest) ProtoMessage() {}
+
+func (x *DeleteConflictingReferenceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_storage_core_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteConflictingReferenceRequest.ProtoReflect.Descriptor instead.
+func (*DeleteConflictingReferenceRequest) Descriptor() ([]byte, []int) {
+	return file_storage_core_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *DeleteConflictingReferenceRequest) GetRepository() *Repository {
+	if x != nil {
+		return x.Repository
+	}
+	return nil
+}
+
+func (x *DeleteConflictingReferenceRequest) GetReference() []byte {
+	if x != nil {
+		return x.Reference
+	}
+	return nil
+}
+
+func (x *DeleteConflictingReferenceRequest) GetExpectedTarget() string {
+	if x != nil {
+		return x.ExpectedTarget
+	}
+	return ""
+}
+
+// DeleteConflictingReferenceResponse is the response of
+// DeleteConflictingReference.
+type DeleteConflictingReferenceResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// sequence is the sequence of the changeset that deleted the reference.
+	Sequence      uint64 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteConflictingReferenceResponse) Reset() {
+	*x = DeleteConflictingReferenceResponse{}
+	mi := &file_storage_core_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteConflictingReferenceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteConflictingReferenceResponse) ProtoMessage() {}
+
+func (x *DeleteConflictingReferenceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_storage_core_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteConflictingReferenceResponse.ProtoReflect.Descriptor instead.
+func (*DeleteConflictingReferenceResponse) Descriptor() ([]byte, []int) {
+	return file_storage_core_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *DeleteConflictingReferenceResponse) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
 // ImportRepositoryRequest is the request of ImportRepository.
 type ImportRepositoryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -32,7 +144,7 @@ type ImportRepositoryRequest struct {
 
 func (x *ImportRepositoryRequest) Reset() {
 	*x = ImportRepositoryRequest{}
-	mi := &file_storage_core_proto_msgTypes[0]
+	mi := &file_storage_core_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -44,7 +156,7 @@ func (x *ImportRepositoryRequest) String() string {
 func (*ImportRepositoryRequest) ProtoMessage() {}
 
 func (x *ImportRepositoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[0]
+	mi := &file_storage_core_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -57,7 +169,7 @@ func (x *ImportRepositoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportRepositoryRequest.ProtoReflect.Descriptor instead.
 func (*ImportRepositoryRequest) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{0}
+	return file_storage_core_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ImportRepositoryRequest) GetRepository() *Repository {
@@ -86,7 +198,7 @@ type ImportRepositoryResponse struct {
 
 func (x *ImportRepositoryResponse) Reset() {
 	*x = ImportRepositoryResponse{}
-	mi := &file_storage_core_proto_msgTypes[1]
+	mi := &file_storage_core_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -98,7 +210,7 @@ func (x *ImportRepositoryResponse) String() string {
 func (*ImportRepositoryResponse) ProtoMessage() {}
 
 func (x *ImportRepositoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[1]
+	mi := &file_storage_core_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -111,7 +223,7 @@ func (x *ImportRepositoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportRepositoryResponse.ProtoReflect.Descriptor instead.
 func (*ImportRepositoryResponse) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{1}
+	return file_storage_core_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ImportRepositoryResponse) GetSequence() uint64 {
@@ -160,7 +272,7 @@ type GetStorageStateRequest struct {
 
 func (x *GetStorageStateRequest) Reset() {
 	*x = GetStorageStateRequest{}
-	mi := &file_storage_core_proto_msgTypes[2]
+	mi := &file_storage_core_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -172,7 +284,7 @@ func (x *GetStorageStateRequest) String() string {
 func (*GetStorageStateRequest) ProtoMessage() {}
 
 func (x *GetStorageStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[2]
+	mi := &file_storage_core_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -185,7 +297,7 @@ func (x *GetStorageStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStorageStateRequest.ProtoReflect.Descriptor instead.
 func (*GetStorageStateRequest) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{2}
+	return file_storage_core_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetStorageStateRequest) GetRepository() *Repository {
@@ -218,7 +330,7 @@ type GetStorageStateResponse struct {
 
 func (x *GetStorageStateResponse) Reset() {
 	*x = GetStorageStateResponse{}
-	mi := &file_storage_core_proto_msgTypes[3]
+	mi := &file_storage_core_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -230,7 +342,7 @@ func (x *GetStorageStateResponse) String() string {
 func (*GetStorageStateResponse) ProtoMessage() {}
 
 func (x *GetStorageStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[3]
+	mi := &file_storage_core_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -243,7 +355,7 @@ func (x *GetStorageStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStorageStateResponse.ProtoReflect.Descriptor instead.
 func (*GetStorageStateResponse) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{3}
+	return file_storage_core_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GetStorageStateResponse) GetMode() string {
@@ -301,7 +413,7 @@ type VerifyRepositoryRequest struct {
 
 func (x *VerifyRepositoryRequest) Reset() {
 	*x = VerifyRepositoryRequest{}
-	mi := &file_storage_core_proto_msgTypes[4]
+	mi := &file_storage_core_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -313,7 +425,7 @@ func (x *VerifyRepositoryRequest) String() string {
 func (*VerifyRepositoryRequest) ProtoMessage() {}
 
 func (x *VerifyRepositoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[4]
+	mi := &file_storage_core_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -326,7 +438,7 @@ func (x *VerifyRepositoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyRepositoryRequest.ProtoReflect.Descriptor instead.
 func (*VerifyRepositoryRequest) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{4}
+	return file_storage_core_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *VerifyRepositoryRequest) GetRepository() *Repository {
@@ -360,7 +472,7 @@ type VerifyRepositoryResponse struct {
 
 func (x *VerifyRepositoryResponse) Reset() {
 	*x = VerifyRepositoryResponse{}
-	mi := &file_storage_core_proto_msgTypes[5]
+	mi := &file_storage_core_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -372,7 +484,7 @@ func (x *VerifyRepositoryResponse) String() string {
 func (*VerifyRepositoryResponse) ProtoMessage() {}
 
 func (x *VerifyRepositoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[5]
+	mi := &file_storage_core_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -385,7 +497,7 @@ func (x *VerifyRepositoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyRepositoryResponse.ProtoReflect.Descriptor instead.
 func (*VerifyRepositoryResponse) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{5}
+	return file_storage_core_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *VerifyRepositoryResponse) GetHeadSequence() uint64 {
@@ -427,7 +539,7 @@ type CreateCheckpointRequest struct {
 
 func (x *CreateCheckpointRequest) Reset() {
 	*x = CreateCheckpointRequest{}
-	mi := &file_storage_core_proto_msgTypes[6]
+	mi := &file_storage_core_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -439,7 +551,7 @@ func (x *CreateCheckpointRequest) String() string {
 func (*CreateCheckpointRequest) ProtoMessage() {}
 
 func (x *CreateCheckpointRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[6]
+	mi := &file_storage_core_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -452,7 +564,7 @@ func (x *CreateCheckpointRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCheckpointRequest.ProtoReflect.Descriptor instead.
 func (*CreateCheckpointRequest) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{6}
+	return file_storage_core_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CreateCheckpointRequest) GetRepository() *Repository {
@@ -480,7 +592,7 @@ type CreateCheckpointResponse struct {
 
 func (x *CreateCheckpointResponse) Reset() {
 	*x = CreateCheckpointResponse{}
-	mi := &file_storage_core_proto_msgTypes[7]
+	mi := &file_storage_core_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -492,7 +604,7 @@ func (x *CreateCheckpointResponse) String() string {
 func (*CreateCheckpointResponse) ProtoMessage() {}
 
 func (x *CreateCheckpointResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[7]
+	mi := &file_storage_core_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -505,7 +617,7 @@ func (x *CreateCheckpointResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCheckpointResponse.ProtoReflect.Descriptor instead.
 func (*CreateCheckpointResponse) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{7}
+	return file_storage_core_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CreateCheckpointResponse) GetCheckpointSequence() uint64 {
@@ -549,7 +661,7 @@ type CollectGarbageRequest struct {
 
 func (x *CollectGarbageRequest) Reset() {
 	*x = CollectGarbageRequest{}
-	mi := &file_storage_core_proto_msgTypes[8]
+	mi := &file_storage_core_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -561,7 +673,7 @@ func (x *CollectGarbageRequest) String() string {
 func (*CollectGarbageRequest) ProtoMessage() {}
 
 func (x *CollectGarbageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[8]
+	mi := &file_storage_core_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -574,7 +686,7 @@ func (x *CollectGarbageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectGarbageRequest.ProtoReflect.Descriptor instead.
 func (*CollectGarbageRequest) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{8}
+	return file_storage_core_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CollectGarbageRequest) GetRepository() *Repository {
@@ -622,7 +734,7 @@ type CollectGarbageResponse struct {
 
 func (x *CollectGarbageResponse) Reset() {
 	*x = CollectGarbageResponse{}
-	mi := &file_storage_core_proto_msgTypes[9]
+	mi := &file_storage_core_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -634,7 +746,7 @@ func (x *CollectGarbageResponse) String() string {
 func (*CollectGarbageResponse) ProtoMessage() {}
 
 func (x *CollectGarbageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[9]
+	mi := &file_storage_core_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -647,7 +759,7 @@ func (x *CollectGarbageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectGarbageResponse.ProtoReflect.Descriptor instead.
 func (*CollectGarbageResponse) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{9}
+	return file_storage_core_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CollectGarbageResponse) GetBoundary() uint64 {
@@ -727,7 +839,7 @@ type CollectRemovedRepositoriesRequest struct {
 
 func (x *CollectRemovedRepositoriesRequest) Reset() {
 	*x = CollectRemovedRepositoriesRequest{}
-	mi := &file_storage_core_proto_msgTypes[10]
+	mi := &file_storage_core_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -739,7 +851,7 @@ func (x *CollectRemovedRepositoriesRequest) String() string {
 func (*CollectRemovedRepositoriesRequest) ProtoMessage() {}
 
 func (x *CollectRemovedRepositoriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[10]
+	mi := &file_storage_core_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -752,7 +864,7 @@ func (x *CollectRemovedRepositoriesRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CollectRemovedRepositoriesRequest.ProtoReflect.Descriptor instead.
 func (*CollectRemovedRepositoriesRequest) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{10}
+	return file_storage_core_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CollectRemovedRepositoriesRequest) GetStorageName() string {
@@ -799,7 +911,7 @@ type CollectRemovedRepositoriesResponse struct {
 
 func (x *CollectRemovedRepositoriesResponse) Reset() {
 	*x = CollectRemovedRepositoriesResponse{}
-	mi := &file_storage_core_proto_msgTypes[11]
+	mi := &file_storage_core_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -811,7 +923,7 @@ func (x *CollectRemovedRepositoriesResponse) String() string {
 func (*CollectRemovedRepositoriesResponse) ProtoMessage() {}
 
 func (x *CollectRemovedRepositoriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[11]
+	mi := &file_storage_core_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -824,7 +936,7 @@ func (x *CollectRemovedRepositoriesResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use CollectRemovedRepositoriesResponse.ProtoReflect.Descriptor instead.
 func (*CollectRemovedRepositoriesResponse) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{11}
+	return file_storage_core_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CollectRemovedRepositoriesResponse) GetRepositories() uint32 {
@@ -893,7 +1005,7 @@ type VerifyRepositoryResponse_ReferenceDivergence struct {
 
 func (x *VerifyRepositoryResponse_ReferenceDivergence) Reset() {
 	*x = VerifyRepositoryResponse_ReferenceDivergence{}
-	mi := &file_storage_core_proto_msgTypes[12]
+	mi := &file_storage_core_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -905,7 +1017,7 @@ func (x *VerifyRepositoryResponse_ReferenceDivergence) String() string {
 func (*VerifyRepositoryResponse_ReferenceDivergence) ProtoMessage() {}
 
 func (x *VerifyRepositoryResponse_ReferenceDivergence) ProtoReflect() protoreflect.Message {
-	mi := &file_storage_core_proto_msgTypes[12]
+	mi := &file_storage_core_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -918,7 +1030,7 @@ func (x *VerifyRepositoryResponse_ReferenceDivergence) ProtoReflect() protorefle
 
 // Deprecated: Use VerifyRepositoryResponse_ReferenceDivergence.ProtoReflect.Descriptor instead.
 func (*VerifyRepositoryResponse_ReferenceDivergence) Descriptor() ([]byte, []int) {
-	return file_storage_core_proto_rawDescGZIP(), []int{5, 0}
+	return file_storage_core_proto_rawDescGZIP(), []int{7, 0}
 }
 
 func (x *VerifyRepositoryResponse_ReferenceDivergence) GetReference() []byte {
@@ -947,7 +1059,15 @@ var File_storage_core_proto protoreflect.FileDescriptor
 const file_storage_core_proto_rawDesc = "" +
 	"\n" +
 	"\x12storage_core.proto\x12\x06gitaly\x1a\n" +
-	"lint.proto\x1a\fshared.proto\"S\n" +
+	"lint.proto\x1a\fshared.proto\"\xa4\x01\n" +
+	"!DeleteConflictingReferenceRequest\x128\n" +
+	"\n" +
+	"repository\x18\x01 \x01(\v2\x12.gitaly.RepositoryB\x04\x98\xc6,\x01R\n" +
+	"repository\x12\x1c\n" +
+	"\treference\x18\x02 \x01(\fR\treference\x12'\n" +
+	"\x0fexpected_target\x18\x03 \x01(\tR\x0eexpectedTarget\"@\n" +
+	"\"DeleteConflictingReferenceResponse\x12\x1a\n" +
+	"\bsequence\x18\x01 \x01(\x04R\bsequence\"S\n" +
 	"\x17ImportRepositoryRequest\x128\n" +
 	"\n" +
 	"repository\x18\x01 \x01(\v2\x12.gitaly.RepositoryB\x04\x98\xc6,\x01R\n" +
@@ -1024,14 +1144,15 @@ const file_storage_core_proto_rawDesc = "" +
 	"\vleaks_found\x18\x05 \x01(\rR\n" +
 	"leaksFound\x12)\n" +
 	"\x10leaks_tombstoned\x18\x06 \x01(\rR\x0fleaksTombstoned\x123\n" +
-	"\x16ids_ahead_of_allocator\x18\a \x01(\rR\x13idsAheadOfAllocator2\xe5\x04\n" +
+	"\x16ids_ahead_of_allocator\x18\a \x01(\rR\x13idsAheadOfAllocator2\xe2\x05\n" +
 	"\x12StorageCoreService\x12]\n" +
 	"\x10ImportRepository\x12\x1f.gitaly.ImportRepositoryRequest\x1a .gitaly.ImportRepositoryResponse\"\x06\xfa\x97(\x02\b\x01\x12Z\n" +
 	"\x0fGetStorageState\x12\x1e.gitaly.GetStorageStateRequest\x1a\x1f.gitaly.GetStorageStateResponse\"\x06\xfa\x97(\x02\b\x02\x12]\n" +
 	"\x10VerifyRepository\x12\x1f.gitaly.VerifyRepositoryRequest\x1a .gitaly.VerifyRepositoryResponse\"\x06\xfa\x97(\x02\b\x02\x12]\n" +
 	"\x10CreateCheckpoint\x12\x1f.gitaly.CreateCheckpointRequest\x1a .gitaly.CreateCheckpointResponse\"\x06\xfa\x97(\x02\b\x01\x12W\n" +
 	"\x0eCollectGarbage\x12\x1d.gitaly.CollectGarbageRequest\x1a\x1e.gitaly.CollectGarbageResponse\"\x06\xfa\x97(\x02\b\x01\x12}\n" +
-	"\x1aCollectRemovedRepositories\x12).gitaly.CollectRemovedRepositoriesRequest\x1a*.gitaly.CollectRemovedRepositoriesResponse\"\b\xfa\x97(\x04\b\x01\x10\x02B.Z,github.com/feder-cr/git-ai/proto/go/gitalypbb\x06proto3"
+	"\x1aCollectRemovedRepositories\x12).gitaly.CollectRemovedRepositoriesRequest\x1a*.gitaly.CollectRemovedRepositoriesResponse\"\b\xfa\x97(\x04\b\x01\x10\x02\x12{\n" +
+	"\x1aDeleteConflictingReference\x12).gitaly.DeleteConflictingReferenceRequest\x1a*.gitaly.DeleteConflictingReferenceResponse\"\x06\xfa\x97(\x02\b\x01B.Z,github.com/feder-cr/git-ai/proto/go/gitalypbb\x06proto3"
 
 var (
 	file_storage_core_proto_rawDescOnce sync.Once
@@ -1045,47 +1166,52 @@ func file_storage_core_proto_rawDescGZIP() []byte {
 	return file_storage_core_proto_rawDescData
 }
 
-var file_storage_core_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_storage_core_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_storage_core_proto_goTypes = []any{
-	(*ImportRepositoryRequest)(nil),                      // 0: gitaly.ImportRepositoryRequest
-	(*ImportRepositoryResponse)(nil),                     // 1: gitaly.ImportRepositoryResponse
-	(*GetStorageStateRequest)(nil),                       // 2: gitaly.GetStorageStateRequest
-	(*GetStorageStateResponse)(nil),                      // 3: gitaly.GetStorageStateResponse
-	(*VerifyRepositoryRequest)(nil),                      // 4: gitaly.VerifyRepositoryRequest
-	(*VerifyRepositoryResponse)(nil),                     // 5: gitaly.VerifyRepositoryResponse
-	(*CreateCheckpointRequest)(nil),                      // 6: gitaly.CreateCheckpointRequest
-	(*CreateCheckpointResponse)(nil),                     // 7: gitaly.CreateCheckpointResponse
-	(*CollectGarbageRequest)(nil),                        // 8: gitaly.CollectGarbageRequest
-	(*CollectGarbageResponse)(nil),                       // 9: gitaly.CollectGarbageResponse
-	(*CollectRemovedRepositoriesRequest)(nil),            // 10: gitaly.CollectRemovedRepositoriesRequest
-	(*CollectRemovedRepositoriesResponse)(nil),           // 11: gitaly.CollectRemovedRepositoriesResponse
-	(*VerifyRepositoryResponse_ReferenceDivergence)(nil), // 12: gitaly.VerifyRepositoryResponse.ReferenceDivergence
-	(*Repository)(nil),                                   // 13: gitaly.Repository
+	(*DeleteConflictingReferenceRequest)(nil),            // 0: gitaly.DeleteConflictingReferenceRequest
+	(*DeleteConflictingReferenceResponse)(nil),           // 1: gitaly.DeleteConflictingReferenceResponse
+	(*ImportRepositoryRequest)(nil),                      // 2: gitaly.ImportRepositoryRequest
+	(*ImportRepositoryResponse)(nil),                     // 3: gitaly.ImportRepositoryResponse
+	(*GetStorageStateRequest)(nil),                       // 4: gitaly.GetStorageStateRequest
+	(*GetStorageStateResponse)(nil),                      // 5: gitaly.GetStorageStateResponse
+	(*VerifyRepositoryRequest)(nil),                      // 6: gitaly.VerifyRepositoryRequest
+	(*VerifyRepositoryResponse)(nil),                     // 7: gitaly.VerifyRepositoryResponse
+	(*CreateCheckpointRequest)(nil),                      // 8: gitaly.CreateCheckpointRequest
+	(*CreateCheckpointResponse)(nil),                     // 9: gitaly.CreateCheckpointResponse
+	(*CollectGarbageRequest)(nil),                        // 10: gitaly.CollectGarbageRequest
+	(*CollectGarbageResponse)(nil),                       // 11: gitaly.CollectGarbageResponse
+	(*CollectRemovedRepositoriesRequest)(nil),            // 12: gitaly.CollectRemovedRepositoriesRequest
+	(*CollectRemovedRepositoriesResponse)(nil),           // 13: gitaly.CollectRemovedRepositoriesResponse
+	(*VerifyRepositoryResponse_ReferenceDivergence)(nil), // 14: gitaly.VerifyRepositoryResponse.ReferenceDivergence
+	(*Repository)(nil),                                   // 15: gitaly.Repository
 }
 var file_storage_core_proto_depIdxs = []int32{
-	13, // 0: gitaly.ImportRepositoryRequest.repository:type_name -> gitaly.Repository
-	13, // 1: gitaly.GetStorageStateRequest.repository:type_name -> gitaly.Repository
-	13, // 2: gitaly.VerifyRepositoryRequest.repository:type_name -> gitaly.Repository
-	12, // 3: gitaly.VerifyRepositoryResponse.divergences:type_name -> gitaly.VerifyRepositoryResponse.ReferenceDivergence
-	13, // 4: gitaly.CreateCheckpointRequest.repository:type_name -> gitaly.Repository
-	13, // 5: gitaly.CollectGarbageRequest.repository:type_name -> gitaly.Repository
-	0,  // 6: gitaly.StorageCoreService.ImportRepository:input_type -> gitaly.ImportRepositoryRequest
-	2,  // 7: gitaly.StorageCoreService.GetStorageState:input_type -> gitaly.GetStorageStateRequest
-	4,  // 8: gitaly.StorageCoreService.VerifyRepository:input_type -> gitaly.VerifyRepositoryRequest
-	6,  // 9: gitaly.StorageCoreService.CreateCheckpoint:input_type -> gitaly.CreateCheckpointRequest
-	8,  // 10: gitaly.StorageCoreService.CollectGarbage:input_type -> gitaly.CollectGarbageRequest
-	10, // 11: gitaly.StorageCoreService.CollectRemovedRepositories:input_type -> gitaly.CollectRemovedRepositoriesRequest
-	1,  // 12: gitaly.StorageCoreService.ImportRepository:output_type -> gitaly.ImportRepositoryResponse
-	3,  // 13: gitaly.StorageCoreService.GetStorageState:output_type -> gitaly.GetStorageStateResponse
-	5,  // 14: gitaly.StorageCoreService.VerifyRepository:output_type -> gitaly.VerifyRepositoryResponse
-	7,  // 15: gitaly.StorageCoreService.CreateCheckpoint:output_type -> gitaly.CreateCheckpointResponse
-	9,  // 16: gitaly.StorageCoreService.CollectGarbage:output_type -> gitaly.CollectGarbageResponse
-	11, // 17: gitaly.StorageCoreService.CollectRemovedRepositories:output_type -> gitaly.CollectRemovedRepositoriesResponse
-	12, // [12:18] is the sub-list for method output_type
-	6,  // [6:12] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	15, // 0: gitaly.DeleteConflictingReferenceRequest.repository:type_name -> gitaly.Repository
+	15, // 1: gitaly.ImportRepositoryRequest.repository:type_name -> gitaly.Repository
+	15, // 2: gitaly.GetStorageStateRequest.repository:type_name -> gitaly.Repository
+	15, // 3: gitaly.VerifyRepositoryRequest.repository:type_name -> gitaly.Repository
+	14, // 4: gitaly.VerifyRepositoryResponse.divergences:type_name -> gitaly.VerifyRepositoryResponse.ReferenceDivergence
+	15, // 5: gitaly.CreateCheckpointRequest.repository:type_name -> gitaly.Repository
+	15, // 6: gitaly.CollectGarbageRequest.repository:type_name -> gitaly.Repository
+	2,  // 7: gitaly.StorageCoreService.ImportRepository:input_type -> gitaly.ImportRepositoryRequest
+	4,  // 8: gitaly.StorageCoreService.GetStorageState:input_type -> gitaly.GetStorageStateRequest
+	6,  // 9: gitaly.StorageCoreService.VerifyRepository:input_type -> gitaly.VerifyRepositoryRequest
+	8,  // 10: gitaly.StorageCoreService.CreateCheckpoint:input_type -> gitaly.CreateCheckpointRequest
+	10, // 11: gitaly.StorageCoreService.CollectGarbage:input_type -> gitaly.CollectGarbageRequest
+	12, // 12: gitaly.StorageCoreService.CollectRemovedRepositories:input_type -> gitaly.CollectRemovedRepositoriesRequest
+	0,  // 13: gitaly.StorageCoreService.DeleteConflictingReference:input_type -> gitaly.DeleteConflictingReferenceRequest
+	3,  // 14: gitaly.StorageCoreService.ImportRepository:output_type -> gitaly.ImportRepositoryResponse
+	5,  // 15: gitaly.StorageCoreService.GetStorageState:output_type -> gitaly.GetStorageStateResponse
+	7,  // 16: gitaly.StorageCoreService.VerifyRepository:output_type -> gitaly.VerifyRepositoryResponse
+	9,  // 17: gitaly.StorageCoreService.CreateCheckpoint:output_type -> gitaly.CreateCheckpointResponse
+	11, // 18: gitaly.StorageCoreService.CollectGarbage:output_type -> gitaly.CollectGarbageResponse
+	13, // 19: gitaly.StorageCoreService.CollectRemovedRepositories:output_type -> gitaly.CollectRemovedRepositoriesResponse
+	1,  // 20: gitaly.StorageCoreService.DeleteConflictingReference:output_type -> gitaly.DeleteConflictingReferenceResponse
+	14, // [14:21] is the sub-list for method output_type
+	7,  // [7:14] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_storage_core_proto_init() }
@@ -1101,7 +1227,7 @@ func file_storage_core_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_storage_core_proto_rawDesc), len(file_storage_core_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
