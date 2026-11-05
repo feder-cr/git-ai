@@ -20,6 +20,11 @@ machine.
   configuration. Whoever can edit the server configuration can change who may
   write where. Protect the configuration and the token files accordingly.
 
+## Reference name length
+
+Reference names, and symbolic reference targets, over 1024 bytes are refused.
+An existing reference over the limit can still be read and deleted.
+
 ## Security limitations
 
 ### Who the policy decides on

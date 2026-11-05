@@ -781,7 +781,7 @@ func applyNames(ctx context.Context, repo *localrepo.Repo, names []string, refs 
 func applyTransaction(ctx context.Context, repo *localrepo.Repo, names []string, refs map[string]corestore.Target) error {
 	// The references are set as they are stored in the database: a detached HEAD
 	// must not write through a symbolic HEAD, so no dereferencing.
-	updater, err := updateref.New(ctx, repo, updateref.WithDisabledTransactions(), updateref.WithNoDeref())
+	updater, err := updateref.New(ctx, repo, updateref.WithDisabledTransactions(), updateref.WithNoDeref(), updateref.WithExistingReferences())
 	if err != nil {
 		return fmt.Errorf("new updater: %w", err)
 	}

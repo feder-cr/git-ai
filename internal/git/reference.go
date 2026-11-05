@@ -163,6 +163,21 @@ func NewSymbolicReference(name ReferenceName, target ReferenceName) Reference {
 	}
 }
 
+// MaxReferenceNameLength is the length in bytes of the longest reference name, or symbolic reference
+// target, that the server writes. See doc/graft/LIMITATIONS.md.
+const MaxReferenceNameLength = 1024
+
+// ValidateReferenceNameLength refuses a reference name longer than MaxReferenceNameLength. It applies
+// to the names being written only, so it is not part of ValidateReference, which also judges the names
+// of existing references: those can still be read and deleted. The error does not repeat the name.
+func ValidateReferenceNameLength(name string) error {
+	if len(name) > MaxReferenceNameLength {
+		return fmt.Errorf("reference name is %d bytes long, over the limit of %d bytes", len(name), MaxReferenceNameLength)
+	}
+
+	return nil
+}
+
 // ValidateReference checks whether a reference looks valid. It aims to be a faithful implementation of Git's own
 // `check_or_sanitize_refname()` function and all divergent behaviour is considered to be a bug. Please also refer to
 // https://git-scm.com/docs/git-check-ref-format#_description for further information on the actual rules.
