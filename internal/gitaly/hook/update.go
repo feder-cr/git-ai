@@ -58,6 +58,16 @@ func (m *GitLabHookManager) updateHook(ctx context.Context, payload gitcmd.Hooks
 		return structerr.NewInternal("payload has no receive hooks info")
 	}
 
+	// The update hook runs for each reference of a push, so this refuses the one reference and
+	// tells the client why, and the other references of a non-atomic push still land. Deleting an
+	// existing long reference stays possible.
+	if !objectHash.IsZeroOID(git.ObjectID(newValue)) {
+		if err := git.ValidateReferenceNameLength(ref); err != nil {
+			fmt.Fprintf(stderr, "%s\n", err)
+			return structerr.NewInvalidArgument("%w", err)
+		}
+	}
+
 	executor, err := m.newCustomHooksExecutor(ctx, repo, "update")
 	if err != nil {
 		return structerr.NewInternal("%w", err)

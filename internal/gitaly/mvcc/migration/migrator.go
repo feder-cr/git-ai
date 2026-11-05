@@ -615,6 +615,7 @@ func migrateFilesBackend(
 		repo,
 		updateref.WithNoDeref(),
 		updateref.WithDisabledTransactions(),
+		updateref.WithExistingReferences(),
 		updateref.WithRefURI(git.ReferenceBackendMVCC, stagePath),
 	)
 	if err != nil {
