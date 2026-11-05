@@ -135,6 +135,11 @@ const (
 	// some RPCs like CommitDiff, where individual paths are provided as arguments
 	// to perform selective diffing.
 	maxLoggedArgsElements = 100
+	// defaultTerminationGrace is how long the process group of a command whose context is done has
+	// to end after SIGTERM, before it gets SIGKILL. git takes milliseconds to remove its locks, and
+	// SIGKILL leaves them behind, so this only has to be long for a machine under load. It is what
+	// a caller of a cancelled command can wait at most for a group that ignores SIGTERM.
+	defaultTerminationGrace = 10 * time.Second
 )
 
 // Command encapsulates a running exec.Cmd. The embedded exec.Cmd is
@@ -459,6 +464,11 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 		// finish when the command closes its write end.
 		closeLogWriter()
 
+		terminationGrace := defaultTerminationGrace
+		if cfg.terminationGrace > 0 {
+			terminationGrace = cfg.terminationGrace
+		}
+
 		teardown := func() {
 			// Before we kill the child process we need to close the process' standard streams. If
 			// we don't, it may happen that the signal gets delivered and that the process exits
@@ -473,6 +483,22 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 				//nolint:errcheck // TODO: do we want to report errors?
 				// Send SIGTERM to the process group of cmd
 				syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+
+				// SIGTERM lets git remove its locks, but a process may ignore it (a custom
+				// hook that traps it, and the git waiting for that hook), and Wait below has
+				// to end: every caller of the command waits on it.
+				escalation := time.AfterFunc(terminationGrace, func() {
+					select {
+					case <-command.processExitedCh:
+						return
+					default:
+					}
+
+					logger.WithField("pid", cmd.Process.Pid).WarnContext(ctx, "process group outlived SIGTERM, sending SIGKILL")
+					//nolint:errcheck // The group may be gone by now, which is what we want.
+					syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				})
+				defer escalation.Stop()
 			}
 
 			// We do not care for any potential error code, but just want to
@@ -495,24 +521,6 @@ func New(ctx context.Context, logger log.Logger, nameAndArgs []string, opts ...O
 			select {
 			case <-ctx.Done():
 				teardown()
-				// Before we kill the child process we need to close the process' standard streams. If
-				// we don't, it may happen that the signal gets delivered and that the process exits
-				// before we close the streams in `command.Wait()`. This would cause downstream readers
-				// to potentially miss those errors when reading stdout.
-				command.teardownStandardStreams()
-
-				// If the context has been cancelled and we didn't explicitly reap
-				// the child process then we need to manually kill it and release
-				// all associated resources.
-				if cmd.Process.Pid > 0 {
-					//nolint:errcheck // TODO: do we want to report errors?
-					// Send SIGTERM to the process group of cmd
-					syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-				}
-
-				// We do not care for any potential error code, but just want to
-				// make sure that the subprocess gets properly killed and processed.
-				_ = command.Wait()
 			case <-command.processExitedCh:
 				// Otherwise, if the process has exited via a call to `wait()`
 				// already then there is nothing we need to do.

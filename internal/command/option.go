@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/feder-cr/git-ai/internal/cgroups"
 	"github.com/feder-cr/git-ai/internal/git"
@@ -31,6 +32,8 @@ type config struct {
 	// command if subprocess logging is in use.
 	logConfiguration         log.Config
 	completionErrorLogFilter func(*Command, string) bool
+	// terminationGrace replaces defaultTerminationGrace when set; only tests set it.
+	terminationGrace time.Duration
 }
 
 // Option is an option that can be passed to `New()` for controlling how the command is being

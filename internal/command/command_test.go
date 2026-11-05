@@ -744,10 +744,7 @@ func TestCommand_exitStatusReporting(t *testing.T) {
 		entry := entryWithMessage(t, hook, "fatal: interrupted\n")
 		require.Equal(t, logrus.WarnLevel, entry.Level)
 		require.Equal(t, -1, entry.Data["command.exitCode"])
-		require.Contains(t,
-			[]string{syscall.SIGTERM.String(), syscall.SIGKILL.String()},
-			entry.Data["command.signal"],
-		)
+		require.Equal(t, syscall.SIGTERM.String(), entry.Data["command.signal"])
 	})
 
 	t.Run("stderr is non-empty but context was not cancelled", func(t *testing.T) {
