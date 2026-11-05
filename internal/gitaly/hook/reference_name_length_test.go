@@ -116,15 +116,22 @@ func TestReferenceTransactionHook_longReferenceNames(t *testing.T) {
 		{desc: "deletion of an existing long reference", changes: line(oid, zero, long)},
 		{desc: "forced deletion of an existing long reference", changes: line(zero, zero, long)},
 	} {
-		t.Run(tc.desc, func(t *testing.T) {
-			err := hookManager.ReferenceTransactionHook(ctx, ReferenceTransactionPreparing, []string{env}, strings.NewReader(tc.changes))
-			if !tc.refused {
-				require.NoError(t, err)
-				return
-			}
+		// The prepared phase is the one that gitaly-hooks always forwards; the preparing phase only
+		// reaches the server with the storage core.
+		for phase, state := range map[string]ReferenceTransactionState{
+			"prepared":  ReferenceTransactionPrepared,
+			"preparing": ReferenceTransactionPreparing,
+		} {
+			t.Run(tc.desc+" "+phase, func(t *testing.T) {
+				err := hookManager.ReferenceTransactionHook(ctx, state, []string{env}, strings.NewReader(tc.changes))
+				if !tc.refused {
+					require.NoError(t, err)
+					return
+				}
 
-			require.Equal(t, codes.InvalidArgument, status.Code(err))
-			require.ErrorContains(t, err, "over the limit of 1024 bytes")
-		})
+				require.Equal(t, codes.InvalidArgument, status.Code(err))
+				require.ErrorContains(t, err, "over the limit of 1024 bytes")
+			})
+		}
 	}
 }
