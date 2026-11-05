@@ -43,6 +43,10 @@ func (durabilityVoter) Aborted(context.Context, gitcmd.HooksPayload, []byte) {}
 
 func (durabilityVoter) Authoritative() bool { return true }
 
+func (v durabilityVoter) CreatedRefConflict(context.Context, *gitalypb.Repository, string) (string, error) {
+	return "", nil
+}
+
 func (v durabilityVoter) DeferReferenceWrites(context.Context, *gitalypb.Repository) (func(), bool) {
 	if !v.deferred {
 		return nil, false
@@ -91,6 +95,10 @@ type endingVoter struct {
 	t      *testing.T
 	ends   *int
 	failed *string
+}
+
+func (v endingVoter) CreatedRefConflict(context.Context, *gitalypb.Repository, string) (string, error) {
+	return "", nil
 }
 
 func (v endingVoter) DeferReferenceWrites(context.Context, *gitalypb.Repository) (func(), bool) {

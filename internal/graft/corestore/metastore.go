@@ -13,6 +13,12 @@ import (
 type ChangesetInput struct {
 	// RepoID is the repository. RegisterRepository ignores it.
 	RepoID int64
+	// OnlyConflictingNames refuses the changeset with ErrRefNotConflicting,
+	// writing nothing, unless every reference it updates exists and is one side
+	// of a pair that git cannot hold together (RefNameConflicts). It is checked
+	// in the transaction of the commit, under the lock of the repository. Only
+	// the operator's repair of such a pair sets it.
+	OnlyConflictingNames bool
 	// Updates are the reference changes, in order. A name appears at most once.
 	Updates []RefUpdate
 	// Operation, Actor and NodeID describe who made the changeset.
@@ -142,8 +148,19 @@ type MetaStore interface {
 	// is set, a changeset that deletes or moves the keep-around reference of a
 	// commit that an open review uses as its head or base is refused with
 	// ErrReviewRootInUse (doc/graft/PLAN7.md, REVIEW ROOTS RULE); shadow mode,
-	// whose changesets are forced, does not enforce it.
+	// whose changesets are forced, does not enforce it. A changeset that creates
+	// a reference that cannot exist in git next to another one of the repository
+	// (refs/heads/a and refs/heads/a/b), counting the changeset's own deletions
+	// and creations, is refused with *ErrRefNameConflict, writing nothing, also
+	// when Force is set: the database must stay something git can apply.
 	CommitChangeset(ctx context.Context, in ChangesetInput) (CommitResult, error)
+	// ConflictingRef returns a reference of the repository that git cannot hold
+	// next to a reference named name (a parent directory of name that is a
+	// reference, or a reference below name), and whether there is one; name
+	// itself does not count. It reads the committed state, outside any commit, so
+	// a commit may change the answer right after: CommitChangeset decides. It
+	// costs one primary key lookup and one primary key range probe.
+	ConflictingRef(ctx context.Context, repoID int64, name string) (string, bool, error)
 	// ListChangesets returns the changesets with after < seq <= upTo in
 	// ascending order, with their updates.
 	ListChangesets(ctx context.Context, repoID int64, after, upTo uint64) ([]Changeset, error)

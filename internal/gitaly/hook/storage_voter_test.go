@@ -76,6 +76,10 @@ func (v *recordingVoter) DeferReferenceWrites(context.Context, *gitalypb.Reposit
 	return nil, false
 }
 
+func (v *recordingVoter) CreatedRefConflict(context.Context, *gitalypb.Repository, string) (string, error) {
+	return "", nil
+}
+
 // TestReferenceTransactionHook_storageVoterInvocation checks that every phase hands the storage
 // core the invocation of the process, by which it ties the admission to that process.
 func TestReferenceTransactionHook_storageVoterInvocation(t *testing.T) {

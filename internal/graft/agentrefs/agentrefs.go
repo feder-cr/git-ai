@@ -5,7 +5,11 @@
 // for agents (gitcmd). The blobs of a proposal reach an agent by their object IDs, in its package.
 package agentrefs
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/feder-cr/git-ai/internal/git"
+)
 
 // HiddenPrefix is the namespace that agents do not see.
 const HiddenPrefix = "refs/graft/"
@@ -20,6 +24,22 @@ var ServerNamespaces = []string{"proposals", "green"}
 // Hidden reports whether a full reference name is one agents do not see.
 func Hidden(ref string) bool {
 	return strings.HasPrefix(ref, HiddenPrefix)
+}
+
+// VisibleToAgents reports whether an agent can see the full reference name at all: it is not
+// under HiddenPrefix, nor under a namespace that the server never advertises to any client
+// (git.InternalRefPrefixes of type InternalReferenceTypeHidden). A message to an agent names no
+// other reference.
+func VisibleToAgents(ref string) bool {
+	if Hidden(ref) {
+		return false
+	}
+	for prefix, kind := range git.InternalRefPrefixes {
+		if kind == git.InternalReferenceTypeHidden && strings.HasPrefix(ref, prefix) {
+			return false
+		}
+	}
+	return true
 }
 
 // RevisionHidden reports whether a revision, reference or pattern an agent sends names a reference

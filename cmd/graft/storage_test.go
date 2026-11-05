@@ -161,6 +161,59 @@ func TestCLIStorageMaintenanceAgainstServer(t *testing.T) {
 	require.True(t, exists)
 }
 
+// TestCLIStorageDeleteConflictingRef drives the repair of a repository whose
+// database holds two references that git cannot hold together: verify names them
+// and the way out, and the deletion the operator chooses brings the repository
+// back. It runs serially because the CLI tests share the package-level backend
+// factory.
+func TestCLIStorageDeleteConflictingRef(t *testing.T) {
+	ctx := testhelper.Context(t)
+	cfg := testcfg.Build(t)
+	cfg.Graft.Standalone = true
+	core := coretest.Open(t, coretest.Options{Mode: corestore.ModeAuthoritative})
+	addr := testserver.RunGitalyServer(t, cfg, setup.RegisterAll, testserver.WithGraftStorage(core))
+
+	repo, repoPath := gittest.CreateRepository(t, ctx, cfg, gittest.CreateRepositoryConfig{SkipCreationViaService: true})
+	main := gittest.WriteCommit(t, cfg, repoPath, gittest.WithBranch("main"))
+	target := []string{"-address", addr, "-storage", repo.GetStorageName(), "-repo", repo.GetRelativePath()}
+	cli := func(args ...string) (int, string, string) {
+		return runCLI(t, append(append([]string{"storage"}, args...), target...)...)
+	}
+
+	code, _, stderr := cli("import")
+	require.Equal(t, exitOK, code, stderr)
+
+	record, err := core.Meta.GetRepository(ctx, corestore.KeyOf(repo))
+	require.NoError(t, err)
+	coretest.CommitRefWithoutNameCheck(t, ctx, core.Meta, record.ID, "refs/heads/a", corestore.Target(main))
+	coretest.CommitRefWithoutNameCheck(t, ctx, core.Meta, record.ID, "refs/heads/a/b", corestore.Target(main))
+
+	code, _, stderr = cli("verify")
+	require.Equal(t, exitError, code)
+	require.Contains(t, stderr, "refs/heads/a/b")
+	require.Contains(t, stderr, "delete-conflicting-ref")
+
+	code, _, stderr = cli("delete-conflicting-ref", "refs/heads/main", main.String())
+	require.Equal(t, exitError, code)
+	require.Contains(t, stderr, "not part of a pair")
+
+	code, stdout, stderr := cli("delete-conflicting-ref", "--json", "refs/heads/a", main.String())
+	require.Equal(t, exitOK, code, stderr)
+	var deleted map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &deleted))
+	require.Equal(t, "refs/heads/a", deleted["reference"])
+	require.Equal(t, main.String(), deleted["deleted_target"])
+	require.EqualValues(t, 4, deleted["sequence"])
+
+	code, stdout, stderr = cli("verify")
+	require.Equal(t, exitOK, code, stderr)
+	require.Equal(t, "head sequence 4\nconsistent\n", stdout)
+	requireRefs(t, cfg, repoPath, map[string]string{
+		"refs/heads/a/b":  main.String(),
+		"refs/heads/main": main.String(),
+	})
+}
+
 // TestCLIStorageCoreOff checks that a server without a storage core reports
 // mode off and refuses an import.
 func TestCLIStorageCoreOff(t *testing.T) {
@@ -190,6 +243,9 @@ func TestCLIStorageUsageErrorsDoNotContactServer(t *testing.T) {
 		"verify with arg":           {"storage", "verify", "-C", dir, "extra"},
 		"checkpoint with arg":       {"storage", "checkpoint", "-C", dir, "extra"},
 		"gc with arg":               {"storage", "gc", "-C", dir, "extra"},
+		"delete conflicting no arg": {"storage", "delete-conflicting-ref", "-C", dir},
+		"delete conflicting 1 arg":  {"storage", "delete-conflicting-ref", "-C", dir, "refs/heads/a"},
+		"delete conflicting dry":    {"storage", "delete-conflicting-ref", "--dry-run", "-C", dir, "refs/heads/a", "x"},
 		"gc removed and repo":       {"storage", "gc", "--removed", "-C", dir, "-repo", "a.git"},
 		"gc removed without server": {"storage", "gc", "--removed", "-C", dir},
 		"import dry run":            {"storage", "import", "--dry-run", "-C", dir},

@@ -46,10 +46,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1197,6 +1199,11 @@ func (s *Syncer) checkLocked(ctx context.Context, repo *localrepo.Repo, path str
 		}
 		moves[name] = move{old: current, new: h.final}
 	}
+
+	moves, err = withLocalAbsenceProofs(ctx, repo, moves)
+	if err != nil {
+		return checkOutcome{}, structerr.NewInternal("storage core: %w", err)
+	}
 	return checkOutcome{moves: moves}, nil
 }
 
@@ -1415,7 +1422,7 @@ func applyMoves(ctx context.Context, repo *localrepo.Repo, w refWriter, hash git
 func applyChecked(ctx context.Context, repo *localrepo.Repo, w refWriter, hash git.ObjectHash, names []string, moves map[string]move) error {
 	var removals, others []string
 	twoSteps := false
-	for _, name := range names {
+	for _, name := range withoutImpliedAbsences(names, moves) {
 		del, set := casSteps(name, moves[name], hash)
 		if del != "" {
 			removals = append(removals, del)
@@ -1440,6 +1447,117 @@ func applyChecked(ctx context.Context, repo *localrepo.Repo, w refWriter, hash g
 		return fmt.Errorf("apply removals: %w", err)
 	}
 	return refTransaction(ctx, repo, w, others)
+}
+
+// withLocalAbsenceProofs returns moves, or a copy of it in which the verification of an absent
+// name that conflicts with a local reference outside moves is replaced by the verification of that
+// local reference at its current value.
+//
+// A name is verified absent when the range creates and deletes it, and the database at the end of
+// the range confirms it absent (the move's new value). git refuses that verification while a local
+// reference exists that it could not hold next to the name (refs/a next to a verification of
+// refs/a/b), as for a creation, so such a catch-up would fail on every attempt. That is the usual
+// state after the operator deleted one side of a pair that two nodes each held one side of: the
+// node that holds the kept side catches up over the deleted side, created and deleted. Names the
+// range itself conflicts with are left to withoutImpliedAbsences.
+//
+// The local reference proves the absence: git cannot hold both names, so while it exists the name
+// does not. Verifying it at the value read keeps the compare-and-swap: a local write that moved it
+// since, which a write of the name would need, fails the transaction, and the check runs again. A
+// database that holds both names at the end of the range is not touched by this: the name is then
+// created, not verified, and git still refuses it.
+func withLocalAbsenceProofs(ctx context.Context, repo *localrepo.Repo, moves map[string]move) (map[string]move, error) {
+	var absent []string
+	for name, m := range moves {
+		if name != "HEAD" && m.verify() && m.old.Absent() {
+			absent = append(absent, name)
+		}
+	}
+	if len(absent) == 0 {
+		return moves, nil
+	}
+
+	conflicts, err := gitops.LocalNameConflicts(ctx, repo, absent)
+	if err != nil {
+		return nil, fmt.Errorf("read the local references next to names verified absent: %w", err)
+	}
+
+	var proved map[string]move
+	for _, name := range absent {
+		local, ok := conflicts[name]
+		if !ok {
+			continue
+		}
+		if _, inRange := moves[local.Name]; inRange {
+			continue
+		}
+		if proved == nil {
+			proved = maps.Clone(moves)
+		}
+		delete(proved, name)
+		proved[local.Name] = move{old: local.Target, new: local.Target}
+	}
+	if proved == nil {
+		return moves, nil
+	}
+	return proved, nil
+}
+
+// withoutImpliedAbsences returns the sorted names without the verifications of
+// an absence that another command already implies. A reference can be absent both
+// before and after a range that created and deleted it, while a name it conflicts
+// with exists: refs/a in a range that ends with refs/a/b. git applies its
+// file/directory check to the verification of an absent name too, as if it were
+// created, so it refuses it next to refs/a/b, in one transaction or with refs/a/b
+// existing, and no order of the commands would help.
+//
+// Git's own check makes that verification redundant, whichever of the two
+// conflicting names the other command is about. A command on a name that exists
+// before or after the range requires it to exist or to be creatable, which git
+// refuses while the absent name exists, and git refuses a concurrent local
+// creation of the absent name while the other one exists. The verification of
+// an absent name does the same for an absent name below it (git refuses it while
+// the name below exists). So a local write to a name left out still fails the
+// transaction or finds the name it needs taken, and the check runs again
+// (applyLocked reads every name of moves).
+//
+// Only a name that conflicts with a command that stays is left out: siblings
+// below a verification that is itself left out are verified.
+func withoutImpliedAbsences(names []string, moves map[string]move) []string {
+	absence := func(name string) bool {
+		m := moves[name]
+		return m.verify() && m.old.Absent()
+	}
+
+	// parentsOfExisting holds the parent directories of the names that exist before
+	// or after the range. names being sorted, a parent comes before its children.
+	parentsOfExisting := map[string]struct{}{}
+	for _, name := range names {
+		if !absence(name) {
+			for _, parent := range corestore.ParentRefNames(name) {
+				parentsOfExisting[parent] = struct{}{}
+			}
+		}
+	}
+
+	kept := make([]string, 0, len(names))
+	stays := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if absence(name) {
+			if _, implied := parentsOfExisting[name]; implied {
+				continue
+			}
+			if slices.ContainsFunc(corestore.ParentRefNames(name), func(parent string) bool {
+				_, ok := stays[parent]
+				return ok
+			}) {
+				continue
+			}
+		}
+		stays[name] = struct{}{}
+		kept = append(kept, name)
+	}
+	return kept
 }
 
 // refWriter runs the reference transactions of the catch-up on the local

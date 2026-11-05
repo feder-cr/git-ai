@@ -501,6 +501,78 @@ func ReadRefValues(ctx context.Context, repo *localrepo.Repo, names []string) (m
 	return result, nil
 }
 
+// LocalRef is a reference of the local repository and its value.
+type LocalRef struct {
+	Name   string
+	Target corestore.Target
+}
+
+// LocalNameConflicts returns, for each name of names that has one, a local reference that git
+// cannot hold next to a reference named name: a parent directory of name that is a reference, or
+// else the first reference below name. Names that cannot exist as references are skipped. It
+// costs one ReadRefValues of the parent names and one for-each-ref per 500 names; it does not read
+// the other references of the repository.
+func LocalNameConflicts(ctx context.Context, repo *localrepo.Repo, names []string) (map[string]LocalRef, error) {
+	var valid, parents []string
+	seen := map[string]bool{}
+	for _, name := range names {
+		if !strings.HasPrefix(name, "refs/") || git.ValidateReference(name) != nil {
+			continue
+		}
+		valid = append(valid, name)
+		for _, parent := range corestore.ParentRefNames(name) {
+			if !seen[parent] {
+				seen[parent] = true
+				parents = append(parents, parent)
+			}
+		}
+	}
+	if len(valid) == 0 {
+		return nil, nil
+	}
+
+	parentValues, err := ReadRefValues(ctx, repo, parents)
+	if err != nil {
+		return nil, err
+	}
+
+	// A pattern matches the name and the references below it.
+	below := map[string]corestore.Target{}
+	for start := 0; start < len(valid); start += refValuesChunk {
+		chunk := valid[start:min(start+refValuesChunk, len(valid))]
+		refs, err := readForEachRef(ctx, repo, chunk...)
+		if err != nil {
+			return nil, err
+		}
+		for ref, target := range refs {
+			below[ref] = target
+		}
+	}
+
+	result := map[string]LocalRef{}
+	for _, name := range valid {
+		for _, parent := range corestore.ParentRefNames(name) {
+			if target, ok := parentValues[parent]; ok {
+				result[name] = LocalRef{Name: parent, Target: target}
+				break
+			}
+		}
+		if _, found := result[name]; found {
+			continue
+		}
+		first := ""
+		for ref := range below {
+			if strings.HasPrefix(ref, name+"/") && (first == "" || ref < first) {
+				first = ref
+			}
+		}
+		if first != "" {
+			result[name] = LocalRef{Name: first, Target: below[first]}
+		}
+	}
+	return result, nil
+}
+
 // danglingWarning is the warning git prints when it looks up a name that is a
 // symbolic reference whose target does not exist. Gitaly runs git with an
 // English locale.

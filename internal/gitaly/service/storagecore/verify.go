@@ -15,7 +15,9 @@ import (
 // VerifyRepository implements gitalypb.StorageCoreServiceServer. In
 // authoritative mode the local repository is caught up first (or hydrated when
 // this node has no copy), so that a divergence reports a real inconsistency of
-// the local repository rather than a delay of the catch-up.
+// the local repository rather than a delay of the catch-up. A catch-up that
+// fails because the database holds references git cannot hold together is
+// reported as such, with the way out (refNameConflictError).
 //
 // With check_connectivity it also runs `git fsck --connectivity-only` on the
 // local repository and checks that the packs of the database's changesets hold
@@ -39,6 +41,9 @@ func (s *server) VerifyRepository(ctx context.Context, req *gitalypb.VerifyRepos
 
 	if core.Authoritative() {
 		if err := s.deps.GetGraftStorageSyncer().EnsureFresh(ctx, repo); err != nil {
+			if conflictErr := refNameConflictError(ctx, core, repo); conflictErr != nil {
+				return nil, conflictErr
+			}
 			return nil, err
 		}
 	}

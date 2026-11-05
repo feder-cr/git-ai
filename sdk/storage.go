@@ -228,6 +228,25 @@ func (r *Repo) StorageCheckpoint(ctx context.Context) (*StorageCheckpoint, error
 	}, nil
 }
 
+// StorageDeleteConflictingRef deletes one reference of a pair that git cannot
+// hold together (refs/heads/a and refs/heads/a/b), which is the way out for a
+// repository whose database an older version left with such a pair, and returns
+// the sequence of the changeset. expectedTarget is the value the database must
+// hold: StorageVerify's error names both. It fails with FailedPrecondition
+// outside authoritative mode, when the reference is not part of such a pair, or
+// when it has another value.
+func (r *Repo) StorageDeleteConflictingRef(ctx context.Context, reference, expectedTarget string) (uint64, error) {
+	resp, err := r.storageCore().DeleteConflictingReference(ctx, &gitalypb.DeleteConflictingReferenceRequest{
+		Repository:     r.repository(),
+		Reference:      []byte(reference),
+		ExpectedTarget: expectedTarget,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return resp.GetSequence(), nil
+}
+
 // StorageGC deletes the packs of the repository that no reader needs any more
 // (with dryRun, only reports them). It touches no other repository. It fails
 // with FailedPrecondition when the storage core is off or another maintenance

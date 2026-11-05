@@ -79,6 +79,38 @@ service StorageCoreService {
       scope_level: STORAGE
     };
   }
+
+  // DeleteConflictingReference deletes one reference of a pair that git cannot
+  // hold together (refs/heads/a and refs/heads/a/b), which a database written by
+  // an older version can contain: no node can apply such a pair, so the
+  // repository fails on every node until one side is gone. The operator chooses
+  // the side; nothing deletes a reference of such a pair by itself. It records
+  // an ordinary changeset, which the nodes apply when they catch up. It fails
+  // with FailedPrecondition outside authoritative mode, when the reference is
+  // not part of such a pair, or when it is not at expected_target.
+  rpc DeleteConflictingReference(DeleteConflictingReferenceRequest) returns (DeleteConflictingReferenceResponse) {
+    option (op_type) = {
+      op: MUTATOR
+    };
+  }
+}
+
+// DeleteConflictingReferenceRequest is the request of DeleteConflictingReference.
+message DeleteConflictingReferenceRequest {
+  // repository is the repository that holds the pair.
+  Repository repository = 1 [(target_repository)=true];
+  // reference is the fully qualified name of the reference to delete.
+  bytes reference = 2;
+  // expected_target is the database value the reference must have: a hex object
+  // ID, or "ref:<name>" for a symbolic reference.
+  string expected_target = 3;
+}
+
+// DeleteConflictingReferenceResponse is the response of
+// DeleteConflictingReference.
+message DeleteConflictingReferenceResponse {
+  // sequence is the sequence of the changeset that deleted the reference.
+  uint64 sequence = 1;
 }
 
 // ImportRepositoryRequest is the request of ImportRepository.
