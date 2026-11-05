@@ -69,3 +69,18 @@ func TestImportRepository_longReferenceName(t *testing.T) {
 		require.NotZero(t, res.GetSequence())
 	})
 }
+
+// TestImportRepository_longReferenceAfterACompleteImport: a repeated import only brings history, so a
+// repository imported before the limit is not refused.
+func TestImportRepository_longReferenceAfterACompleteImport(t *testing.T) {
+	forEachCore(t, func(t *testing.T, mode corestore.Mode, dialect sqlstore.Dialect) {
+		h := setup(t, mode, dialect)
+		h.seed()
+		h.importRepo()
+
+		gittest.SeedPackedReference(t, h.repoPath, gittest.ReferenceNameOfLength(t, "refs/heads/", 1025), gittest.ResolveRevision(t, h.cfg, h.repoPath, "HEAD"))
+
+		_, err := h.client.ImportRepository(h.ctx, &gitalypb.ImportRepositoryRequest{Repository: h.repo})
+		require.NoError(t, err)
+	})
+}
