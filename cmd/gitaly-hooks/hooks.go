@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/feder-cr/git-ai/internal/git"
 	"io"
 	"net"
 	"os"
@@ -357,9 +359,27 @@ func referenceTransactionHook(ctx context.Context, payload gitcmd.HooksPayload, 
 		return fmt.Errorf("reference-transaction hook is missing required arguments, got %q", args)
 	}
 
+	var stdin io.Reader = os.Stdin
+
 	var state gitalypb.ReferenceTransactionHookRequest_State
 	switch args[0] {
 	case "preparing":
+		// A name over the limit stops here, before git takes the locks of its long path, without an
+		// RPC and whatever the mode. The refusal goes to stderr, where the server finds it in the
+		// output of the git process.
+		changes, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading the reference updates: %w", err)
+		}
+		objectHash, err := git.ObjectHashByFormat(payload.ObjectFormat)
+		if err != nil {
+			return fmt.Errorf("looking up object hash: %w", err)
+		}
+		if err := hook.ValidateReferenceNameLengths(payload.Repo, objectHash, changes); err != nil {
+			return hookError{returnCode: 1, clientMsg: err.Error()}
+		}
+		stdin = bytes.NewReader(changes)
+
 		// The "preparing" state is forwarded only when the Graft storage core is
 		// authoritative: its write path builds and uploads the pack of the
 		// transaction before git takes the reference locks. Otherwise the RPC is
@@ -393,7 +413,7 @@ func referenceTransactionHook(ctx context.Context, payload gitcmd.HooksPayload, 
 
 	f := sendFunc(streamio.NewWriter(func(p []byte) error {
 		return referenceTransactionHookStream.Send(&gitalypb.ReferenceTransactionHookRequest{Stdin: p})
-	}), referenceTransactionHookStream, os.Stdin)
+	}), referenceTransactionHookStream, stdin)
 
 	if returnCode, err := stream.Handler(func() (stream.StdoutStderrResponse, error) {
 		return referenceTransactionHookStream.Recv()

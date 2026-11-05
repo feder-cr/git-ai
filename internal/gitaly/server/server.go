@@ -17,6 +17,7 @@ import (
 	"github.com/feder-cr/git-ai/internal/grpc/middleware/featureflag"
 	"github.com/feder-cr/git-ai/internal/grpc/middleware/loghandler"
 	"github.com/feder-cr/git-ai/internal/grpc/middleware/panichandler"
+	"github.com/feder-cr/git-ai/internal/grpc/middleware/refnamelimit"
 	"github.com/feder-cr/git-ai/internal/grpc/middleware/requestinfohandler"
 	"github.com/feder-cr/git-ai/internal/grpc/middleware/sentryhandler"
 	"github.com/feder-cr/git-ai/internal/grpc/middleware/statushandler"
@@ -179,6 +180,9 @@ func (s *GitalyServerFactory) New(external, secure bool, opts ...Option) (*grpc.
 	if external && s.cfg.Graft.Standalone {
 		unaryServerInterceptors = append(unaryServerInterceptors, requestdefaults.UnaryServerInterceptor)
 	}
+	// For every caller, once authenticated, and before a request takes a place in a limiter.
+	streamServerInterceptors = append(streamServerInterceptors, refnamelimit.StreamInterceptor)
+	unaryServerInterceptors = append(unaryServerInterceptors, refnamelimit.UnaryInterceptor)
 	// Should be below auth handler to prevent v2 hmac tokens from timing out while queued
 	for _, limitHandler := range s.limitHandlers {
 		streamServerInterceptors = append(streamServerInterceptors, limitHandler.StreamInterceptor())

@@ -227,7 +227,13 @@ func (m *Middleware) StreamServerInterceptor() grpc.StreamServerInterceptor {
 
 		req := methodInfo.NewRequest()
 		if err := ss.RecvMsg(req); err != nil {
-			m.logger.WithError(err).ErrorContext(ss.Context(), "lookup target repository for housekeeping")
+			// A client can send an invalid request at will, which is not an error of the server.
+			logger := m.logger.WithError(err)
+			if status.Code(err) == codes.InvalidArgument {
+				logger.InfoContext(ss.Context(), "lookup target repository for housekeeping")
+			} else {
+				logger.ErrorContext(ss.Context(), "lookup target repository for housekeeping")
+			}
 			return handler(srv, middleware.NewPeekedStream(ss.Context(), nil, err, ss))
 		}
 

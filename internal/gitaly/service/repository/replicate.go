@@ -686,6 +686,9 @@ func fetchInternalRemote(
 			},
 		},
 	); err != nil {
+		if refusal := gitcmd.ReferenceNameLengthRefusal(stderr.Bytes()); refusal != nil {
+			return refusal
+		}
 		if errors.As(err, &localrepo.FetchFailedError{}) {
 			return structerr.New("%w", err).WithMetadata("stderr", stderr.String())
 		}
