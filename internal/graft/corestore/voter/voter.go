@@ -1220,6 +1220,16 @@ func parseInput(changes []byte, hash git.ObjectHash) ([]inputUpdate, error) {
 				return nil, fmt.Errorf("new value of %q: %w", name, err)
 			}
 			u.new = corestore.Target(newValue)
+
+			// A deletion is exempt, so that an existing long reference can be cleaned up.
+			if err := git.ValidateReferenceNameLength(name); err != nil {
+				return nil, err
+			}
+			if u.new.IsSymbolic() {
+				if err := git.ValidateReferenceNameLength(u.new.SymbolicName()); err != nil {
+					return nil, fmt.Errorf("symbolic reference target: %w", err)
+				}
+			}
 		}
 
 		updates = append(updates, u)

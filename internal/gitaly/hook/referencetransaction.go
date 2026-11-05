@@ -61,6 +61,15 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 		m.storageVoter.TransactionStarts(ctx, payload)
 	}
 
+	// Every reference update that git performs with this hook passes here first, before git locks
+	// or writes anything and whatever asked for it (a fetch, for example, takes its names from the
+	// remote). A failed hook makes git abort the whole transaction.
+	if state == ReferenceTransactionPreparing {
+		if err := validateReferenceNameLengths(objectHash, changes); err != nil {
+			return structerr.NewInvalidArgument("%w", err)
+		}
+	}
+
 	m.trackPendingTransaction(state, env, changes)
 
 	var phase voting.Phase
@@ -183,6 +192,34 @@ func (m *GitLabHookManager) ReferenceTransactionHook(ctx context.Context, state 
 
 	return nil
 }
+
+// validateReferenceNameLengths refuses a transaction that writes a reference name, or points a symbolic
+// reference at a name, over git.MaxReferenceNameLength. A deletion is not a write of its name, so that
+// an existing long reference can be cleaned up. A line that does not parse is left to the checks that
+// parse the input for what they do with it.
+func validateReferenceNameLengths(objectHash git.ObjectHash, changes []byte) error {
+	for _, line := range strings.Split(string(changes), "\n") {
+		_, newValue, name, ok := refchange.ParseHookLine(line)
+		if !ok || objectHash.IsZeroOID(git.ObjectID(newValue)) {
+			continue
+		}
+
+		if err := git.ValidateReferenceNameLength(name); err != nil {
+			return err
+		}
+		if target, symbolic := strings.CutPrefix(newValue, symbolicHookValuePrefix); symbolic {
+			if err := git.ValidateReferenceNameLength(target); err != nil {
+				return fmt.Errorf("symbolic reference target: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// symbolicHookValuePrefix starts the value of a symbolic reference in the input of the
+// reference-transaction hook.
+const symbolicHookValuePrefix = "ref:"
 
 // ordersChangesets reports whether the transaction with the given hook input takes a place in the
 // order of the changeset log of its repository.

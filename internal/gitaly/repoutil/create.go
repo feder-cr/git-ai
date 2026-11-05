@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/trace"
+	"strings"
 	"time"
 
 	"github.com/feder-cr/git-ai/internal/git"
@@ -148,6 +149,13 @@ func Create(
 	}
 
 	newRepo := localrepo.New(logger, locator, gitCmdFactory, catfileCache, newRepoProto)
+
+	// The seed can bring references from a URL, a bundle, a snapshot or another repository, and git
+	// clone runs no hook that could refuse them, so the names are checked here. The repository is
+	// still the temporary one: when it is refused nothing lands.
+	if err := validateReferenceNameLengths(ctx, newRepo); err != nil {
+		return err
+	}
 
 	// In order to guarantee that the repository is going to be the same across all
 	// Gitalies in case we're behind Praefect, we vote on the logical state of the
@@ -296,6 +304,32 @@ func VoteRepository(ctx context.Context, voteHash *voting.VoteHash, repo *localr
 
 	if err := voteReferences(ctx, voteHash, repo); err != nil {
 		return fmt.Errorf("vote on references: %w", err)
+	}
+
+	return nil
+}
+
+// validateReferenceNameLengths refuses a new repository that holds a reference name, or a symbolic
+// reference target, over git.MaxReferenceNameLength.
+func validateReferenceNameLengths(ctx context.Context, repo *localrepo.Repo) error {
+	var stdout, stderr bytes.Buffer
+	if err := repo.ExecAndWait(ctx, gitcmd.Command{
+		Name: "for-each-ref",
+		Flags: []gitcmd.Option{
+			gitcmd.Flag{Name: "--format=%(refname) %(symref)"},
+			gitcmd.Flag{Name: "--include-root-refs"},
+		},
+	}, gitcmd.WithStdout(&stdout), gitcmd.WithStderr(&stderr)); err != nil {
+		return fmt.Errorf("listing references: %w, stderr: %q", err, stderr.String())
+	}
+
+	for line := range strings.SplitSeq(stdout.String(), "\n") {
+		// Neither a reference name nor a symbolic target holds a space.
+		for name := range strings.SplitSeq(line, " ") {
+			if err := git.ValidateReferenceNameLength(name); err != nil {
+				return structerr.NewInvalidArgument("%w", err)
+			}
+		}
 	}
 
 	return nil

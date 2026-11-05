@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/feder-cr/git-ai/internal/graft/corestore"
 )
 
 // OpenV010 opens the database with only the schema of v0.1.0 (the first
@@ -59,3 +61,9 @@ func IsDeadlock(err error) bool {
 
 // NotOwnedPackKeyMessage is the documented error of the owned-key trigger.
 const NotOwnedPackKeyMessage = notOwnedPackKeyMessage
+
+// SeedReference inserts a reference row directly, as a reference recorded before a validation existed.
+func (s *Store) SeedReference(ctx context.Context, repoID int64, name string, target corestore.Target) error {
+	_, err := s.db.ExecContext(ctx, "INSERT INTO graft_refs (repo_id, name, target, seq) VALUES ($1, $2, $3, 0)", repoID, []byte(name), string(target))
+	return err
+}
