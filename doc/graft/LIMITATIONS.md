@@ -386,11 +386,21 @@ Git hooks use private.
   server's normal Git protocol for that.
 - In authoritative storage mode, a push without `--atomic` that git rejects one
   update of because of its old value (a branch another client just created, or a
-  reference whose value the serving node does not have) fails as a whole: none of
-  its references lands, where a plain git server would land the others. git still
-  hands the rejected update to the reference-transaction hook, and the storage
-  core cannot tell the other rejected updates of the push apart. Push the
-  references again. See [STORAGE](STORAGE.md#failures).
+  reference whose value the serving node does not have) is refused by the storage
+  core, where a plain git server would land the other references. git still hands
+  the rejected update to the reference-transaction hook, and the storage core
+  cannot tell the other rejected updates of the push apart. git runs such a push
+  in two transactions, the deletions first, then the other updates:
+  - a rejected deletion fails the first transaction, and nothing of the push
+    lands;
+  - a rejected create or update fails the second one. The deletions of the push
+    that git accepted have landed by then (in the database and on the node),
+    without a status line for them and without the post-receive hook.
+  Either way the client sees `fatal: in 'prepared' phase, update aborted by the
+  reference-transaction hook` (over SSH) and the connection ends, with no status
+  per reference. Check which references moved, and push the others again. The
+  same holds for a push that the database refuses for any other reason (a
+  compare-and-swap lost to another node). See [STORAGE](STORAGE.md#failures).
 - `graft` does not materialize repository paths that are reserved, such as
   `.git` or `.graft` directories at any depth, or that are not safe file names
   on the client's system, such as names with `:` or `\` on Windows. It lists

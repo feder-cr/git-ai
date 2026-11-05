@@ -387,7 +387,12 @@ Use the Prepared-phase metric of p8 to split the hold into its steps (git prepar
 
 - In `expectations`, for receive-pack (old value always sent), an update whose explicit old
   value differs from the local value read under git's lock is refused with the whole push, like
-  the `02fbb52` stop-gap for creates; the message names the reference.
+  the `02fbb52` stop-gap for creates. The message does not name the reference: as for the
+  stale create, the client gets `fatal: in 'prepared' phase, update aborted by the
+  reference-transaction hook` (over SSH) and the connection ends, with no status per
+  reference; relaying the reason on stderr is not part of this stage. git runs the deletions
+  of a non-atomic push in a transaction of their own first, so the deletions it accepted land
+  when the refused update is a create or an update (STORAGE.md, Failures).
 - Gate: an e2e test with two nodes reproduces the TLC trace of `dbfirst_bug_multinode.cfg`
   (an ABA of the branch on another node between the push's advertisement and its commands, so
   the client's old value is the database's value while the serving node's copy is behind): it

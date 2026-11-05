@@ -595,13 +595,27 @@ or re-import the repository from scratch (see
   another node moved the reference and moved it back and this node's copy is
   between the two (an ABA that the client did not see), so the database's
   compare-and-swap would accept an update the client is told was rejected. The
-  database must record neither, so the storage core refuses the whole push: the
-  client's push fails, and the other references of that push do not land
-  either, unlike a plain git server. Push them again. The storage core tells
-  this by comparing every old value of a push with the local value it reads
-  while git holds the reference lock, which git checked the update against. In
-  shadow mode the write proceeds unrecorded, and counts in
-  `graft_storage_shadow_errors_total`.
+  database must record neither, so the storage core refuses the transaction
+  that holds the update. The storage core tells this by comparing every old
+  value of a push with the local value it reads while git holds the reference
+  lock, which git checked the update against. What lands depends on git, which
+  runs a non-atomic push in two transactions, the deletions first, then the
+  other updates, each with its own reference-transaction hook and commit:
+  - a rejected deletion fails the first transaction: nothing of the push lands;
+  - a rejected create or update fails the second: the deletions git accepted
+    have landed already, in git and in the database, and the other references
+    of the push do not land, unlike a plain git server.
+  Either way receive-pack dies: the client sees `fatal: in 'prepared' phase,
+  update aborted by the reference-transaction hook` (over SSH; over smart HTTP
+  only that the remote end hung up), no status per reference, and the
+  post-receive hook does not run, also not for the deletions that landed. Check
+  which references moved and push the others again. A push whose transaction
+  the database refuses for another reason (a compare-and-swap lost to another
+  node, a name conflict) behaves the same way. In shadow mode the write proceeds
+  unrecorded, and counts in `graft_storage_shadow_errors_total`. Shadow mode on
+  a files-backend repository also counts one such error for the packed-refs half
+  of a deletion of a packed reference (`0 0 <ref>` while the reference still
+  exists): noise only, the loose half records the deletion.
 - **Two nodes create conflicting names.** git cannot hold `refs/heads/a` and
   `refs/heads/a/b` together, and each node's git only sees its own copy. The
   database refuses, in its commit, a changeset that would leave such a pair
@@ -626,7 +640,9 @@ or re-import the repository from scratch (see
     name conflicts only with the other. git refuses one of the two names, but
     still hands both to the reference-transaction hook (a known git behaviour
     this release does not work around), and the database refuses that
-    changeset. receive-pack then dies: nothing of the push lands. Over SSH the
+    changeset. receive-pack then dies: nothing of the push lands, except its
+    deletions, which git commits first in a transaction of their own (see the
+    previous item). Over SSH the
     client sees the `refusing ...` line as a plain line, and `fatal: in
     'prepared' phase, update aborted by the reference-transaction hook`. Over
     smart HTTP git sends the output of that hook to no client, so the client
