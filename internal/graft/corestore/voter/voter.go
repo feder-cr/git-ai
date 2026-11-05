@@ -513,14 +513,19 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 		return structerr.NewFailedPrecondition("storage core: repository import is not complete; run ImportRepository again")
 	}
 
+	// The local_read step covers the read of the local values and the check of the
+	// old values against them (rejectedByGit), in expectations.
 	localRead := time.Now()
-	refUpdates, err := v.expectations(ctx, repo, updates, payload.IsHookRequested(gitcmd.PreReceiveHook))
+	refUpdates, err := v.expectations(ctx, repo, hash, updates, payload.IsHookRequested(gitcmd.PreReceiveHook))
 	if err == nil {
 		v.observePreparedStep(updates, stepLocalRead, time.Since(localRead))
 	}
 	if err != nil {
-		var exists updateref.ReferenceAlreadyExistsError
-		if errors.As(err, &exists) {
+		var (
+			exists   updateref.ReferenceAlreadyExistsError
+			mismatch updateref.MismatchingStateError
+		)
+		if errors.As(err, &exists) || errors.As(err, &mismatch) {
 			result = resultConflict
 		}
 		return err
@@ -676,13 +681,15 @@ func (v *Voter) prepare(ctx context.Context, payload gitcmd.HooksPayload, change
 //
 // oldValueAlwaysSent tells that the writer always gives git an old value:
 // receive-pack and UpdaterWithHooks, the only writers that request the pre-receive
-// hook. Their zero old value means the reference must not exist. If it does, git
-// rejected the update: receive-pack without --atomic lets one update fail and
-// still feeds it to this hook, without marking it, so the update must never be
-// taken for a forced one. It returns updateref.ReferenceAlreadyExistsError, and
-// the whole transaction is refused, because the voter does not know the other
+// hook. git checked every such old value against the local reference under the
+// lock, which it still holds, so a local value that differs from it means git
+// rejected the update: receive-pack without --atomic lets one update fail and still
+// feeds it to this hook, without marking it (rejectedByGit). The database may hold
+// that old value nonetheless (the local copy is behind it), so such an update must
+// never be recorded, and a zero old value must never be taken for a forced update.
+// The whole transaction is refused, because the voter does not know the other
 // rejected updates of the input.
-func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, updates []inputUpdate, oldValueAlwaysSent bool) ([]corestore.RefUpdate, error) {
+func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, hash git.ObjectHash, updates []inputUpdate, oldValueAlwaysSent bool) ([]corestore.RefUpdate, error) {
 	names := make([]string, len(updates))
 	for i, u := range updates {
 		names[i] = u.name
@@ -722,14 +729,17 @@ func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, updates 
 
 	refUpdates := make([]corestore.RefUpdate, 0, len(updates))
 	for _, u := range updates {
+		if oldValueAlwaysSent {
+			if err := rejectedByGit(u, local, hash); err != nil {
+				return nil, fmt.Errorf("storage core: %w", err)
+			}
+		}
+
 		ru := corestore.RefUpdate{Name: u.name, New: u.new}
 		if u.oldZero {
 			// Git reports the zero value both for "must not exist" and for a forced
 			// update. The local reference tells them apart.
 			if _, exists := local[u.name]; exists {
-				if oldValueAlwaysSent {
-					return nil, fmt.Errorf("storage core: %w", updateref.ReferenceAlreadyExistsError{ReferenceName: u.name})
-				}
 				ru.Expect = corestore.ExpectAny
 			} else {
 				ru.Expect = corestore.ExpectValue
@@ -742,6 +752,33 @@ func (v *Voter) expectations(ctx context.Context, repo *localrepo.Repo, updates 
 	}
 
 	return refUpdates, nil
+}
+
+// rejectedByGit returns the error of an update with an old value that git checked
+// under the reference lock and that the local reference (local, read under that
+// lock) does not have: git rejected it. A zero old value means the reference must
+// not exist (updateref.ReferenceAlreadyExistsError when it does); any other old
+// value must be the local value (updateref.MismatchingStateError otherwise, with
+// the zero object ID for an absent reference). It returns nil for an update git
+// accepted.
+func rejectedByGit(u inputUpdate, local map[string]corestore.Target, hash git.ObjectHash) error {
+	actual, exists := local[u.name]
+	if u.oldZero {
+		if exists {
+			return updateref.ReferenceAlreadyExistsError{ReferenceName: u.name}
+		}
+		return nil
+	}
+	if exists && actual == u.old {
+		return nil
+	}
+
+	zero := hash.ZeroOID.String()
+	return updateref.MismatchingStateError{
+		ReferenceName:    u.name,
+		ExpectedObjectID: targetOrZero(u.old, zero),
+		ActualObjectID:   targetOrZero(actual, zero),
+	}
 }
 
 // isSymbolicRef reports whether name is a symbolic reference, also when its
