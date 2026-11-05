@@ -2,6 +2,8 @@ package repoutil
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,13 +14,21 @@ import (
 	"github.com/feder-cr/git-ai/internal/structerr"
 )
 
+// beforeLock, when set by a test, is called by Lock with the repository path
+// after the path was read and before the lock is taken, where a concurrent
+// request may create or remove the repository.
+var beforeLock func(path string)
+
 // Lock attempts to lock the entire repository directory such that only one
 // process can obtain the lock at a time.
 //
 // The repositories parent directory will be created if it does not exist.
 //
-// Returns the error safe.ErrFileAlreadyLocked if the repository is already
-// locked.
+// Returns an error that is safe.ErrFileAlreadyLocked if the repository is
+// already locked, and also if another request created or removed the
+// repository between the moment Lock read its path and the moment it took the
+// lock: that request held the lock meanwhile, and the caller lost the same race
+// it loses when it finds the lock taken.
 func Lock(ctx context.Context, logger log.Logger, locator storage.Locator, repository storage.Repository) (func(), error) {
 	path, err := locator.GetRepoPath(ctx, repository, storage.WithRepositoryVerificationSkipped())
 	if err != nil {
@@ -45,9 +55,16 @@ func Lock(ctx context.Context, logger log.Logger, locator storage.Locator, repos
 		}
 	}
 
+	if beforeLock != nil {
+		beforeLock(path)
+	}
+
 	if err := locker.Lock(); err != nil {
 		unlock()
 
+		if errors.Is(err, safe.ErrFileConcurrentlyCreated) || errors.Is(err, safe.ErrFileConcurrentlyDeleted) {
+			return nil, fmt.Errorf("%w: %w", safe.ErrFileAlreadyLocked, err)
+		}
 		return nil, err
 	}
 

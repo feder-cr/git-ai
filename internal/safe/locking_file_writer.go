@@ -22,6 +22,15 @@ const (
 // another concurrent process.
 var ErrFileAlreadyLocked = errors.New("file already locked")
 
+// ErrFileConcurrentlyCreated, ErrFileConcurrentlyDeleted and ErrFileConcurrentlyModified are
+// returned by Lock and Commit when the target file was created, deleted or modified after the
+// LockingFileWriter was created.
+var (
+	ErrFileConcurrentlyCreated  = errors.New("file concurrently created")
+	ErrFileConcurrentlyDeleted  = errors.New("file concurrently deleted")
+	ErrFileConcurrentlyModified = errors.New("file concurrently modified")
+)
+
 // LockingFileWriter is a FileWriter which locks the target file on commit and checks whether it
 // has been modified since the LockingFileWriter has been created. The user must first create a new
 // LockingFileWriter via `NewLockingFileWriter()`, at which point it is open for writes. The writer
@@ -197,14 +206,14 @@ func (fw *LockingFileWriter) checkConcurrentModification() error {
 	}
 
 	if fw.fi == nil && fi != nil {
-		return fmt.Errorf("file concurrently created")
+		return ErrFileConcurrentlyCreated
 	}
 	if fw.fi != nil && fi == nil {
-		return fmt.Errorf("file concurrently deleted")
+		return ErrFileConcurrentlyDeleted
 	}
 	if fw.fi != nil && fi != nil {
 		if fw.fi.Size() != fi.Size() || fw.fi.ModTime() != fi.ModTime() || fw.fi.Mode() != fi.Mode() {
-			return fmt.Errorf("file concurrently modified")
+			return ErrFileConcurrentlyModified
 		}
 	}
 
