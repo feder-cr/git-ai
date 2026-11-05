@@ -823,3 +823,65 @@ func TestConcurrentDeletionsOfOneReference(t *testing.T) {
 		require.Equal(t, 0.0, metricValue(t, core.RefAdmission, bypassedMetric, nil))
 	})
 }
+
+// TestProcessEndForgetsTheTransaction verifies what the voter keeps of a transaction whose process
+// ended: nothing, also when the Prepared phase of its hook finishes after the end; and that the entry
+// of another process with the same hook input stays.
+func TestProcessEndForgetsTheTransaction(t *testing.T) {
+	t.Parallel()
+
+	meta := changelog.Meta{Operation: "test", Actor: "tester"}
+
+	t.Run("the end finds the pack and the entry", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, localRefs: true})
+		input := line(f.zero, f.a.String(), "refs/heads/main")
+
+		p := f.startProcess(t)
+		f.voter.Preparing(f.ctx, p.payload, input)
+		require.Equal(t, 1, f.voter.PreparedPacks())
+		p.end()
+		require.Zero(t, f.voter.PreparedPacks())
+
+		q := f.startProcess(t)
+		f.voter.Preparing(f.ctx, q.payload, input)
+		require.NoError(t, f.voter.Prepared(f.ctx, q.payload, input, meta))
+		require.Equal(t, 1, f.voter.PendingEntries())
+		q.end()
+		require.Zero(t, f.voter.PendingEntries())
+	})
+
+	t.Run("Prepared finishes after the end", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, localRefs: true})
+		input := line(f.zero, f.a.String(), "refs/heads/main")
+
+		p := f.startProcess(t)
+		f.voter.Preparing(f.ctx, p.payload, input)
+		p.end()
+		require.NoError(t, f.voter.Prepared(f.ctx, p.payload, input, meta))
+		require.Equal(t, corestore.Target(f.a.String()), f.dbRef(t, "refs/heads/main"))
+		require.Zero(t, f.voter.PendingEntries())
+	})
+
+	t.Run("the entry of another process with the same input stays", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFixture(t, fixtureOptions{mode: corestore.ModeAuthoritative, localRefs: true})
+		input := line(f.zero, f.a.String(), "refs/heads/main")
+
+		a, b := f.startProcess(t), f.startProcess(t)
+		f.voter.Preparing(f.ctx, a.payload, input)
+		a.end()
+		f.voter.Preparing(f.ctx, b.payload, input)
+		require.NoError(t, f.voter.Prepared(f.ctx, b.payload, input, meta))
+
+		a.end()
+		require.Equal(t, 1, f.voter.PendingEntries())
+		gittest.WriteRef(t, f.cfg, f.repoPath, "refs/heads/main", f.a)
+		f.voter.Committed(f.ctx, b.payload, input)
+		require.Zero(t, f.voter.PendingEntries())
+	})
+}
