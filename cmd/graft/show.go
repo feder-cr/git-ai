@@ -113,9 +113,11 @@ func cmdShow(ctx context.Context, out io.Writer, o *options, args []string) erro
 		_, err = out.Write(append(line, '\n'))
 		return err
 	}
-	fmt.Fprintf(out, "commit %s\nAuthor: %s\n\n%s\n", d.OID, d.Author, d.Subject)
+	// The author, the subject and the file paths come from other clients, so
+	// they go through displayText, like the text of every other command.
+	fmt.Fprintf(out, "commit %s\nAuthor: %s\n\n%s\n", d.OID, displayText(d.Author), displayText(d.Subject))
 	for _, f := range d.Files {
-		fmt.Fprintf(out, "+%d -%d\t%s\n", f.Additions, f.Deletions, f.Path)
+		fmt.Fprintf(out, "+%d -%d\t%s\n", f.Additions, f.Deletions, displayText(f.Path))
 	}
 	return nil
 }
