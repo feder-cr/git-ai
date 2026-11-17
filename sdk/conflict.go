@@ -16,7 +16,7 @@ const MaxLandRequestBytes = 4 << 20
 
 // LandConflict returns the conflict package of a Land call that failed on its conflicts: every
 // conflicting file with its sides, its conflicting hunks and what the server did with it (see
-// doc/graft/RESOLVE.md). The server sends it when the call set ResolveConflicts or Resolution.
+// doc/graft/RESOLVE.md). It is also sent when the call did not ask for automatic resolution.
 // Resolve the files and land again with LandOptions.Resolution (see ResolutionFor).
 func LandConflict(err error) (*gitalypb.LandConflict, bool) {
 	return detailOf[*gitalypb.LandConflict](err)

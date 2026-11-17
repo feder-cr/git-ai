@@ -427,12 +427,11 @@ commitment.
    for hit rates. Phase 3 computes `graph` and `changed-paths` eagerly.
 2. Changeset log retention, and an offset index of the file log that survives
    a restart.
-3. Client-side help for every conflict: `graft land --resolve --conflicts-dir
-   DIR` writes the conflicts of a land (the merged files with conflict markers,
-   the three sides and the resolver's proposals) into DIR, and
-   `graft land --resolved DIR` lands the result. A land without `--resolve`
-   that fails with `merge_conflict` writes nothing yet, and the files are not
-   written into the workspace itself (see [RESOLVE](RESOLVE.md)).
+3. Write conflicts into the workspace itself. `graft land --conflicts-dir DIR`
+   already writes the conflicts of a land (the merged files with conflict
+   markers, the three sides and any resolver proposals) into DIR, with or
+   without `--resolve`, and `graft land --resolved DIR` lands the result
+   (see [RESOLVE](RESOLVE.md)).
 4. Multi-node cache tiers with explicit invalidation for mutable keys.
 5. Signed changesets and a verifiable export of the log.
 

@@ -3088,12 +3088,12 @@ type UserCommitFilesActionHeader struct {
 	Action UserCommitFilesActionHeader_ActionType `protobuf:"varint,1,opt,name=action,proto3,enum=gitaly.UserCommitFilesActionHeader_ActionType" json:"action,omitempty"`
 	// file_path refers to the file or directory being modified. The meaning differs for each
 	// action:
-	//  1. CREATE: path of the file to create
-	//  2. CREATE_DIR: path of the directory to create
-	//  3. UPDATE: path of the file to update
-	//  4. MOVE: the new path of the moved file
-	//  5. DELETE: path of the file to delete
-	//  6. CHMOD: path of the file to modify permissions for
+	//   1. CREATE: path of the file to create
+	//   2. CREATE_DIR: path of the directory to create
+	//   3. UPDATE: path of the file to update
+	//   4. MOVE: the new path of the moved file
+	//   5. DELETE: path of the file to delete
+	//   6. CHMOD: path of the file to modify permissions for
 	FilePath []byte `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
 	// previous_path is used in MOVE action to specify the path of the file to move.
 	PreviousPath []byte `protobuf:"bytes,3,opt,name=previous_path,json=previousPath,proto3" json:"previous_path,omitempty"`
@@ -4860,7 +4860,7 @@ func (x *UserLandRequest) GetResolution() *LandResolution {
 // LandConflict describes the conflicts of a land that the server did not resolve, so
 // that the caller can resolve them and land again with UserLandRequest.resolution. It
 // is sent as an additional detail of the error, next to UserLandError, when the
-// request set resolve_conflicts or resolution.
+// conflicts can be listed, whether or not the request set resolve_conflicts or resolution.
 type LandConflict struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// tip is the branch tip that the change was merged with.

@@ -1289,7 +1289,7 @@ message UserLandRequest {
 // LandConflict describes the conflicts of a land that the server did not resolve, so
 // that the caller can resolve them and land again with UserLandRequest.resolution. It
 // is sent as an additional detail of the error, next to UserLandError, when the
-// request set resolve_conflicts or resolution.
+// conflicts can be listed, whether or not the request set resolve_conflicts or resolution.
 message LandConflict {
   // tip is the branch tip that the change was merged with.
   string tip = 1;

@@ -245,7 +245,7 @@ func oldTip(oid string) string {
 //
 // Failures carry structured details: use IsMergeConflict, IsNotAncestor,
 // IsReferenceUpdateConflict, IsRejectedByHook or LandError, and LandConflict
-// for the conflict package of a land that asked for resolution.
+// for the conflict package, also when no automatic resolution was requested.
 func (r *Repo) Land(ctx context.Context, opts LandOptions) (*LandResult, error) {
 	switch {
 	case trimBranchPrefix(opts.Branch) == "":

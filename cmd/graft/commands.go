@@ -166,9 +166,6 @@ func cmdLand(ctx context.Context, out io.Writer, o *options, args []string) erro
 	if err != nil {
 		return err
 	}
-	if o.conflictsDir != "" && !o.resolve {
-		return usagef("land --conflicts-dir requires --resolve")
-	}
 	if o.resolved != "" && (o.resolve || o.conflictsDir != "") {
 		return usagef("land --resolved takes neither --resolve nor --conflicts-dir")
 	}
@@ -188,7 +185,7 @@ func cmdLand(ctx context.Context, out io.Writer, o *options, args []string) erro
 	}
 	warnSkipped(o, ws)
 	if err != nil {
-		// A land that asked for resolution fails with the conflict package.
+		// A failed land carries the conflict package whether or not resolution was requested.
 		if pkg, ok := sdk.LandConflict(err); ok {
 			printConflict(out, pkg)
 			if o.conflictsDir != "" {

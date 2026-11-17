@@ -90,7 +90,11 @@ func (s *Server) UserLand(ctx context.Context, in *gitalypb.UserLandRequest) (*g
 	if in.GetResolveConflicts() && in.GetResolution() == nil {
 		return s.landResolving(ctx, in, committer)
 	}
-	return s.landOnce(ctx, in, committer, precheck, nil)
+	resp, err := s.landOnce(ctx, in, committer, precheck, nil)
+	if in.GetResolution() == nil && isLandMergeConflict(err) {
+		return nil, s.landConflictWithoutResolution(ctx, in, err)
+	}
+	return resp, err
 }
 
 // validateLandBranch checks the name of the branch that a land updates.

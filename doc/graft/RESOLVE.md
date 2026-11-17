@@ -90,8 +90,9 @@ A client asks for resolution per call:
   refuses a resolution whose request exceeds `sdk.MaxLandRequestBytes`
   (4 MiB) before sending it.
 - CLI: `graft land --resolve`, `graft commit --land BRANCH --resolve`.
-  `graft land --resolve` prints the package when the land fails, and with
-  `--conflicts-dir DIR` writes it: `DIR/files/<path>` is the merge with git's
+  `graft land` prints the package when the land fails on conflicts, whether or
+  not `--resolve` was set. `--conflicts-dir DIR` writes it without requiring
+  automatic resolution: `DIR/files/<path>` is the merge with git's
   diff3 markers (the clean changes of both sides applied), the sides are in
   `DIR/sides/base/<path>`, `DIR/sides/ours/<path>` and
   `DIR/sides/theirs/<path>`, a proposal in `DIR/proposals/<path>` (copy it
@@ -125,6 +126,17 @@ A client asks for resolution per call:
   an absent one is deleted. A path that is a file on none of its sides (a
   submodule) can only be deleted, by removing its file, or resolved outside
   graft.
+  For a manual resolution without calling the server's resolver:
+
+  ```shell
+  graft land --conflicts-dir /tmp/graft-conflicts
+  # Edit /tmp/graft-conflicts/files/<path> to resolve every conflict.
+  graft land --resolved /tmp/graft-conflicts
+  ```
+
+  Against an older server that returns no conflict package for an ordinary
+  land, upgrade the server or opt into `--resolve` to obtain one; the latter
+  may invoke its configured resolver.
 - RPC: `UserLandRequest.resolve_conflicts` (field 10). The response carries
   `resolved_paths` (field 7) and `resolver` (field 8). The re-land is
   `UserLandRequest.resolution` (field 11).
@@ -601,10 +613,15 @@ with `TMPDIR` on tmpfs that disk is memory.
 
 ## The conflict package and the re-land
 
-When a land with `resolve_conflicts` (or with a `resolution`) fails on its
-conflicts, the `merge_conflict` error carries a second detail after
-`UserLandError`: a `LandConflict`. Clients that know only `UserLandError` see
-the error unchanged. The package holds:
+When a land fails on conflicts that can be listed, including a land that did
+not set `resolve_conflicts`, the `merge_conflict` error carries a second detail
+after `UserLandError`: a `LandConflict`. Clients that know only `UserLandError` see
+the error unchanged. Without `resolve_conflicts` or a caller's `resolution`,
+the server calls no resolver: every file is `NOT_ATTEMPTED`. The package
+reason is `conflict resolution was not requested`. It describes the exact tip and commit of the failed
+attempt, even if the branch has since moved. A rebase can conflict on an
+intermediate commit although the merge of the two endpoints is clean; that
+case keeps the original merge conflict without a package. The package holds:
 
 - `tip`, `commit` and `merge_base` (empty when there is none);
 - both commit messages, cut to 4 KiB each, with `messages_truncated`;
