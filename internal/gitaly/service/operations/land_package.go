@@ -8,11 +8,13 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/feder-cr/git-ai/internal/git"
 	"github.com/feder-cr/git-ai/internal/git/gitcmd"
 	"github.com/feder-cr/git-ai/internal/git/localrepo"
+	"github.com/feder-cr/git-ai/internal/gitaly/hook"
 	"github.com/feder-cr/git-ai/internal/graft/merge3"
 	"github.com/feder-cr/git-ai/internal/graft/resolver"
 	"github.com/feder-cr/git-ai/internal/structerr"
@@ -159,6 +161,49 @@ func landWithPackage(ctx context.Context, mergeConflict, resolveErr error) error
 		return structerr.NewInternal("building the conflict package: %w", err)
 	}
 	return se.WithDetail(pkg)
+}
+
+// landConflictWithoutResolution adds a package to an ordinary land's conflict, without calling a
+// resolver. It runs after the lane has answered, in a quarantine of its own, against the exact tip
+// and commit the failed attempt reported: the branch may already have moved again.
+func (s *Server) landConflictWithoutResolution(ctx context.Context, in *gitalypb.UserLandRequest, mergeConflict error) error {
+	var commits []string
+	for _, detail := range status.Convert(mergeConflict).Details() {
+		if landErr, ok := detail.(*gitalypb.UserLandError); ok {
+			commits = landErr.GetMergeConflict().GetConflictingCommitIds()
+			if len(commits) == 2 {
+				break
+			}
+		}
+	}
+	if len(commits) != 2 {
+		return mergeConflict
+	}
+	tip, commitID := git.ObjectID(commits[0]), git.ObjectID(commits[1])
+	reference := git.NewReferenceNameFromBranchName(string(in.GetBranch()))
+	if err := hook.CheckAgentPolicy(ctx, s.graftInForce(ctx), fmt.Sprintf("%s %s %s\n", tip, commitID, reference)); err != nil {
+		return err
+	}
+	_, repo, cleanup, err := s.quarantinedRepo(ctx, in.GetRepository())
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	l, err := landListConflicts(ctx, repo, tip, commitID, s.resolveCfg.MaxFileBytesOrDefault())
+	if errors.Is(err, errLandNoConflicts) {
+		// An intermediate commit of a rebase can conflict although the merge of the two ends is
+		// clean. There is no conflict package for that merge, as with resolve_conflicts.
+		return mergeConflict
+	}
+	if err != nil {
+		return structerr.NewInternal("listing the conflicts of the land: %w", err)
+	}
+	reason := "conflict resolution was not requested"
+	if len(l.files) == 0 {
+		reason = landNoConflictingFiles
+	}
+	return landWithPackage(ctx, mergeConflict, l.notAttempted(reason, nil))
 }
 
 // landKindOf classifies a conflicting file from the presence of its sides.

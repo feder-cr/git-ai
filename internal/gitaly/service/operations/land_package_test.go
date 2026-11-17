@@ -246,7 +246,7 @@ func TestUserLand_conflictPackage(t *testing.T) {
 		}
 	})
 
-	t.Run("without resolve_conflicts there is no package", func(t *testing.T) {
+	t.Run("without resolve_conflicts the package helps the caller resolve", func(t *testing.T) {
 		t.Parallel()
 
 		fx := newResolveFixture(t, config.GraftResolver{})
@@ -254,7 +254,21 @@ func TestUserLand_conflictPackage(t *testing.T) {
 		req.ResolveConflicts = false
 		_, err := fx.client.UserLand(fx.ctx, req)
 		requireMergeConflict(t, err)
-		require.Nil(t, landConflictDetail(err))
+		pkg := landConflictDetail(err)
+		require.NotNil(t, pkg)
+		require.Equal(t, fx.tip.String(), pkg.GetTip())
+		require.Equal(t, fx.commit.String(), pkg.GetCommit())
+		require.Equal(t, fx.base.String(), pkg.GetMergeBase())
+		require.Equal(t, "conflict resolution was not requested", pkg.GetReason())
+		require.Len(t, pkg.GetFiles(), 2)
+		for _, f := range pkg.GetFiles() {
+			require.Equal(t, gitalypb.LandConflictFile_OUTCOME_NOT_ATTEMPTED, f.GetOutcome())
+			require.Len(t, f.GetHunks(), 1)
+			require.NotEmpty(t, f.GetBase().GetOid())
+			require.NotEmpty(t, f.GetOurs().GetOid())
+			require.NotEmpty(t, f.GetTheirs().GetOid())
+		}
+		requireBranchAt(t, fx.cfg, fx.repoPath, git.DefaultBranch, fx.tip)
 	})
 }
 

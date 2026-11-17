@@ -13,9 +13,21 @@ import (
 )
 
 // TestCLILandConflictsAndResolved drives the agent's way through a conflict the server does not
-// resolve (it has no resolver here): graft land --resolve --conflicts-dir writes the package, the
+// resolve (it has no resolver here): graft land --conflicts-dir writes the package, the
 // agent edits the file with the markers, and graft land --resolved lands it.
 func TestCLILandConflictsAndResolved(t *testing.T) {
+	for _, strategy := range []string{"rebase", "merge"} {
+		for _, resolve := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/resolve=%t", strategy, resolve), func(t *testing.T) {
+				testCLILandConflictsAndResolved(t, strategy, resolve)
+			})
+		}
+	}
+}
+
+func testCLILandConflictsAndResolved(t *testing.T, strategy string, resolve bool) {
+	t.Helper()
+
 	env := startServer(t)
 	base := env.seedMain(t, map[string]string{"x.txt": "1\nbase\n3\n", "y.txt": "y\n"})
 
@@ -32,12 +44,20 @@ func TestCLILandConflictsAndResolved(t *testing.T) {
 	require.Equal(t, exitOK, code, stderr)
 
 	conflicts := filepath.Join(t.TempDir(), "conflicts")
-	code, stdout, stderr := runCLI(t, "land", "-C", dir, "-author", "Dev <dev@example.com>", "-strategy", "merge", "-resolve", "-conflicts-dir", conflicts)
+	args := []string{"land", "-C", dir, "-author", "Dev <dev@example.com>", "-strategy", strategy, "-conflicts-dir", conflicts}
+	if resolve {
+		args = append(args, "-resolve")
+	}
+	code, stdout, stderr := runCLI(t, args...)
 	require.Equal(t, exitError, code, stdout)
 	require.Contains(t, stderr, "merge conflict")
 	require.Contains(t, stdout, "the land did not resolve 1 conflicting files")
 	require.Contains(t, stdout, "x.txt: not_attempted")
-	require.Contains(t, stdout, "conflict resolution is not enabled")
+	if resolve {
+		require.Contains(t, stdout, "conflict resolution is not enabled")
+	} else {
+		require.Contains(t, stdout, "conflict resolution was not requested")
+	}
 	require.Contains(t, stdout, "graft land --resolved "+conflicts)
 
 	// The file to edit holds the merge with git's diff3 markers; the sides are beside it.
@@ -53,6 +73,14 @@ func TestCLILandConflictsAndResolved(t *testing.T) {
 
 	// The agent resolves the file and lands the resolution.
 	require.NoError(t, os.WriteFile(filepath.Join(conflicts, "files", "x.txt"), []byte("1\ntip and local\n3\n"), 0o644))
+	// Repeating the failed land must not overwrite the agent's edits.
+	code, _, stderr = runCLI(t, args...)
+	require.Equal(t, exitError, code)
+	require.Contains(t, stderr, "already holds a conflicts directory")
+	edited, err := os.ReadFile(filepath.Join(conflicts, "files", "x.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "1\ntip and local\n3\n", string(edited))
+
 	code, stdout, stderr = runCLI(t, "land", "-C", dir, "-author", "Dev <dev@example.com>", "-resolved", conflicts)
 	require.Equal(t, exitOK, code, stderr)
 	require.Contains(t, stdout, "landed at ")
@@ -122,11 +150,11 @@ func TestCLILandConflictsDirectoryNamespacesAreDisjoint(t *testing.T) {
 
 func TestCLILandConflictFlagsAreChecked(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ws")
-	code, _, stderr := runCLI(t, "land", "-C", dir, "-conflicts-dir", "x")
+	code, _, stderr := runCLI(t, "land", "-C", dir, "-resolved", "x", "-resolve")
 	require.Equal(t, exitUsage, code)
-	require.Contains(t, stderr, "--conflicts-dir requires --resolve")
+	require.Contains(t, stderr, "--resolved takes neither")
 
-	code, _, stderr = runCLI(t, "land", "-C", dir, "-resolved", "x", "-resolve")
+	code, _, stderr = runCLI(t, "land", "-C", dir, "-resolved", "x", "-conflicts-dir", "y")
 	require.Equal(t, exitUsage, code)
 	require.Contains(t, stderr, "--resolved takes neither")
 }

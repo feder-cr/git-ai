@@ -793,8 +793,15 @@ func TestIntegration_Land(t *testing.T) {
 		require.True(t, sdk.IsMergeConflict(err), "got %v", err)
 		require.Equal(t, codes.FailedPrecondition, sdk.Code(err))
 		require.Equal(t, tip.String(), env.mustResolve(t, "main"), "branch is unchanged")
-		_, ok := sdk.LandConflict(err)
-		require.False(t, ok, "no package without ResolveConflicts")
+		pkg, ok := sdk.LandConflict(err)
+		require.True(t, ok, "ordinary lands also return a conflict package")
+		require.Equal(t, tip.String(), pkg.GetTip())
+		require.Equal(t, change.String(), pkg.GetCommit())
+		sides, err := env.repo.ConflictSides(env.ctx, pkg)
+		require.NoError(t, err)
+		require.Equal(t, "base\n", string(sides["f.txt"].Base))
+		require.Equal(t, "tip\n", string(sides["f.txt"].Ours))
+		require.Equal(t, "change\n", string(sides["f.txt"].Theirs))
 	})
 
 	t.Run("the conflict package and the re-land", func(t *testing.T) {

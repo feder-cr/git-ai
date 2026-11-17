@@ -229,7 +229,7 @@ func bindLand(fs *flag.FlagSet, o *options) {
 	fs.StringVar(&o.strategy, "strategy", workspace.StrategyRebase, "land strategy: rebase, merge or ff_only")
 	fs.BoolVar(&o.abort, "abort", false, "drop the pending commit without landing it")
 	fs.BoolVar(&o.resolve, "resolve", false, "let the server resolve merge conflicts")
-	fs.StringVar(&o.conflictsDir, "conflicts-dir", "", "with --resolve: write the conflicts the server did not resolve into this directory")
+	fs.StringVar(&o.conflictsDir, "conflicts-dir", "", "write unresolved conflicts into this directory")
 	fs.StringVar(&o.resolved, "resolved", "", "land the resolution in this directory (written by --conflicts-dir, then edited)")
 }
 

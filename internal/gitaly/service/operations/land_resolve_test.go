@@ -925,6 +925,7 @@ func TestUserLand_resolveConflicts(t *testing.T) {
 		_, err := fx.client.UserLand(fx.ctx, req)
 		requireMergeConflict(t, err)
 		require.Equal(t, 0, resolverCalls(t, dir))
+		require.NotNil(t, landConflictDetail(err), "exporting conflicts must not call the configured resolver")
 		requireBranchAt(t, fx.cfg, fx.repoPath, git.DefaultBranch, fx.tip)
 	})
 
