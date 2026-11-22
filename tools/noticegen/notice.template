@@ -1,5 +1,26 @@
 The following components are included in Gitaly:
 
+Bundled Git
+Builds of gitai embed Git binaries (git, git-remote-http, git-http-backend), compiled
+from Git's source at the commits pinned in the Makefile:
+
+  GIT_VERSION_PREV   a018953688f1b10bddf91bff8747068f5f4746a4 (Git v2.56.0, the default)
+  GIT_VERSION_MASTER 3bbf43483e3954291b9fb4caa228eedb9dd528c2 (a commit on Git's master branch)
+  GIT_VERSION_MVCC   08ed691c4d15bf3e93924c355ce2158b38a8074d (a GitLab branch that diverges
+                     from upstream Git)
+
+The Makefile fetches these from GIT_REPO_URL (https://gitlab.com/gitlab-org/git.git, GitLab's
+Git repository). The upstream project is https://github.com/git/git, where the PREV and MASTER
+commits can also be found; the MVCC commit is not on git/git.
+
+Git is licensed under the GNU General Public License version 2 (GPL-2.0, see the COPYING file
+in Git's source tree). These binaries are separate programs that gitai runs as subprocesses;
+they are not linked into gitai's own code, and Git's source is not part of this repository.
+The MIT license of this repository applies to gitai's own code, not to Git.
+
+Whoever distributes a gitai binary that embeds Git binaries should include Git's license
+(COPYING) and make the corresponding Git source for those commits available.
+
 LICENSE -  go
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
