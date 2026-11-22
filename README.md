@@ -172,3 +172,9 @@ are refused when you switch the storage core to authoritative mode
 of upstream Gitaly is not part of this repository. Gitaly's own README is kept in
 [doc/upstream/README-GITALY.md](doc/upstream/README-GITALY.md), and third-party notices are in
 [NOTICE](NOTICE).
+
+The repository's own code is MIT; it contains no Git source. Builds of gitai embed Git
+binaries compiled from the commits pinned in the Makefile (`GIT_VERSION_PREV`,
+`GIT_VERSION_MASTER`, `GIT_VERSION_MVCC`). Git is licensed under GPL-2.0 and runs as a separate
+subprocess, not linked into gitai. Whoever distributes such a build should ship Git's license
+(COPYING) and make that Git source available, see [NOTICE](NOTICE).
